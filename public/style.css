@@ -131,3 +131,17 @@ dialog::backdrop { background: #0008; }
 
 .imp-opt { display: flex; gap: 10px; align-items: flex-start; padding: 8px 4px; cursor: pointer; }
 .imp-opt input { margin-top: 4px; }
+
+/* quick search (search.js) */
+dialog.qs { margin-top: 8vh; padding: 14px; }
+dialog.qs .row { margin-bottom: 8px; }
+.qs-list { max-height: 60vh; overflow-y: auto; }
+.qs-hit { display: flex; gap: 10px; align-items: center; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.qs-hit.sel { background: var(--bg); outline: 1px solid var(--accent); }
+.qs-empty { padding: 12px 8px; }
+@media screen and (max-width: 760px) {
+  .hdr-right .qs-btn { display: inline-flex; padding: 8px; }
+  .hdr-right .qs-btn .lbl { display: none; }
+  dialog.qs { margin: 0 0 auto; max-height: 100dvh; border-radius: 0 0 18px 18px; }
+  .qs-list { max-height: calc(100dvh - 120px); }
+}

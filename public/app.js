@@ -2,6 +2,7 @@
 import { initCamera } from '/camera.js';
 import { renderInventory } from '/inventory.js';
 import { renderSettings } from '/settings.js';
+import { initQuickSearch } from '/search.js';
 import { buildOverview, buildLabelSheets, DEFAULT_LABEL_CFG, MIN_MODULE_MM } from '/sheets.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -618,6 +619,8 @@ const invDeps = {
 };
 
 $('#camHdr')?.addEventListener('click', () => camera.open());
+const quickSearch = initQuickSearch({ h, api, setKids, thumb, nutriBadge, expSpan, openProduct });
+$('#qsBtn')?.addEventListener('click', () => quickSearch.open());
 $('#camFab')?.addEventListener('click', () => camera.open());
 
 // design switcher (themes.css); the saved choice is applied before first paint by index.html

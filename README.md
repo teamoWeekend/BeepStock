@@ -54,6 +54,12 @@ bestätigen, bei Chrome „Erweitert → Weiter“). Trage die LAN-IP des Server
 (mehrere mit Komma). WebSocket und alles andere laufen auch über 8443. `HTTPS_PORT=0` schaltet es ab.
 Mit `?camdry=1` an der Adresse zeigt der Scanner nur, was er erkennt, ohne etwas zu buchen.
 
+## Schnellsuche
+
+Knopf **Suchen** oben rechts oder die Taste `/` (auf jeder Seite). Ein paar Buchstaben aus Name, Marke oder Barcode genügen, mehrere
+Wörter in beliebiger Reihenfolge („milch weide“). Was im Vorrat ist, steht oben, mit Anzahl, Lagerort, Anbruch und nächstem MHD.
+Pfeiltasten wählen, Enter öffnet die Produktdetails, Esc schließt.
+
 ## Modi und Steuercodes
 
 Unter **Steuercodes** gibt es druckbare Code-128-Barcodes (am Kühlschrank aufhängen). Sie nutzen nur Buchstaben

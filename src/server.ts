@@ -303,13 +303,32 @@ app.get('/api/stats', async () => {
 
 // ---------------------------------------------------------------- products
 
+// Search: every word must appear in name, brand or barcode (any order, case-insensitive), e.g. "milch weide" or "4006".
+// Exact barcodes and names starting with the first word come first; stock_first=1 puts products in stock before the rest.
 app.get('/api/products', async (req) => {
-  const search = String((req.query as any)?.q ?? '').trim();
+  const query = req.query as any;
+  const words = String(query?.q ?? '').trim().split(/\s+/).filter(Boolean).slice(0, 8);
+  const limit = Math.min(500, Math.max(1, parseInt(String(query?.limit ?? '500'), 10) || 500));
+  const stockFirst = query?.stock_first === '1'; // quick search: what is in the pantry before the rest
+  const like = (w: string) => `%${w.replace(/[\\%_]/g, '\\$&')}%`;
+  const params: unknown[] = words.map(like);
+  const where = words.map((_, i) => `concat_ws(' ', p.name, p.brand, p.barcode) ILIKE $${i + 1}`).join(' AND ') || 'TRUE';
+  params.push(words.join(' '), words[0] ? `${words[0].replace(/[\\%_]/g, '\\$&')}%` : '');
+  const full = `$${params.length - 1}`, prefix = `$${params.length}`;
   const rows = await q(
-    `SELECT p.*, st.name AS store_name, (SELECT count(*)::int FROM stock_items s WHERE s.barcode = p.barcode AND s.status = 'in_stock') AS in_stock
-     FROM products p LEFT JOIN stores st ON st.id = p.store_id WHERE ($1 = '' OR p.name ILIKE '%' || $1 || '%' OR p.brand ILIKE '%' || $1 || '%' OR p.barcode = $1)
-     ORDER BY p.name LIMIT 500`,
-    [search],
+    `SELECT p.*, st.name AS store_name, s.in_stock, s.opened, s.next_expiry, s.location_names
+     FROM products p LEFT JOIN stores st ON st.id = p.store_id
+     LEFT JOIN LATERAL (
+       SELECT count(*)::int AS in_stock, count(si.opened_at)::int AS opened,
+              min(LEAST(si.best_before, si.opened_at::date + p.days_after_opening)) AS next_expiry,
+              array_remove(array_agg(DISTINCT l.name), NULL) AS location_names
+       FROM stock_items si LEFT JOIN locations l ON l.id = si.location_id
+       WHERE si.barcode = p.barcode AND si.status = 'in_stock'
+     ) s ON TRUE
+     WHERE ${where}
+     ORDER BY (p.barcode = ${full}) DESC, ${stockFirst ? 's.in_stock > 0 DESC, ' : ''}(p.name ILIKE ${prefix}) DESC, p.name
+     LIMIT ${limit}`,
+    params,
   );
   return { products: rows };
 });
