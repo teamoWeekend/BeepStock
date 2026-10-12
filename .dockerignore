@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+node_modules
+dist
+firmware
+docs
+tests
+*.md
+*.sql
+*.log
+.env.*

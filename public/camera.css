@@ -1,0 +1,66 @@
+/* Camera scanner overlay (always dark, independent of the chosen design) + entry buttons */
+.cam-open { overflow: hidden; }
+.cam { position: fixed; inset: 0; z-index: 1000; background: #000; color: #fff; display: flex; flex-direction: column; font-family: system-ui, "Segoe UI", sans-serif; }
+.cam[hidden] { display: none; }
+.cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+
+/* viewfinder */
+.cam-frame { position: absolute; left: 50%; top: 38%; width: min(86vw, 540px); height: min(44vw, 270px); transform: translate(-50%, -50%); pointer-events: none; border-radius: 14px;
+  box-shadow: 0 0 0 100vmax #00000066; }
+.cam-frame i { position: absolute; width: 28px; height: 28px; border: 4px solid #fff; }
+.cam-frame i:nth-child(1) { left: -2px; top: -2px; border-right: 0; border-bottom: 0; border-top-left-radius: 14px; }
+.cam-frame i:nth-child(2) { right: -2px; top: -2px; border-left: 0; border-bottom: 0; border-top-right-radius: 14px; }
+.cam-frame i:nth-child(3) { left: -2px; bottom: -2px; border-right: 0; border-top: 0; border-bottom-left-radius: 14px; }
+.cam-frame i:nth-child(4) { right: -2px; bottom: -2px; border-left: 0; border-top: 0; border-bottom-right-radius: 14px; }
+.cam-line { position: absolute; left: 8px; right: 8px; height: 2px; background: #ff3b6b; box-shadow: 0 0 12px #ff3b6b; animation: cam-scan 2s ease-in-out infinite; }
+@keyframes cam-scan { 0%, 100% { top: 10%; } 50% { top: 90%; } }
+.cam[data-flash="ok"] .cam-frame i { border-color: #35e08f; }
+.cam[data-flash="warn"] .cam-frame i { border-color: #ffb020; }
+.cam[data-flash="error"] .cam-frame i { border-color: #ff4d5e; }
+@media (prefers-reduced-motion: reduce) { .cam-line { animation: none; top: 50%; } }
+
+/* top bar */
+.cam-top { position: relative; z-index: 2; display: flex; align-items: center; gap: 10px; padding: max(10px, env(safe-area-inset-top)) 12px 10px; background: linear-gradient(#000c, #0000); }
+.cam-title { flex: 1; font-weight: 700; letter-spacing: .02em; text-shadow: 0 1px 4px #000; }
+.cam-count { font-weight: 400; opacity: .8; }
+.cam-round { width: 48px; height: 48px; border-radius: 50%; border: 0; background: #ffffff26; color: #fff; font-size: 20px; backdrop-filter: blur(6px); cursor: pointer; }
+.cam-round.on { background: #ffd54a; color: #000; }
+
+/* bottom sheet */
+.cam-bottom { position: relative; z-index: 2; margin-top: auto; display: grid; gap: 8px; padding: 12px 12px max(12px, env(safe-area-inset-bottom)); background: linear-gradient(#0000, #000d 22%, #000f); }
+.cam-msg { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 10px 14px; border-radius: 14px; background: #ffffff22; font-size: 17px; font-weight: 600; backdrop-filter: blur(8px); }
+.cam-msg[data-level="ok"] { background: #1fa971e6; } .cam-msg[data-level="warn"] { background: #e39a12e6; } .cam-msg[data-level="error"] { background: #e0364ae6; }
+.cam-thumb { width: 38px; height: 38px; object-fit: contain; background: #fff; border-radius: 8px; flex: none; }
+.cam-row { display: flex; gap: 8px; align-items: center; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding: 1px 0; }
+.cam-row::-webkit-scrollbar { display: none; }
+.cam-row { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); padding-right: 24px; } /* hint that the row scrolls */
+.cam-row[hidden], .cam-zoom[hidden], .cam-type[hidden], .cam-panel[hidden] { display: none; }
+.cam-lbl { flex: none; width: 44px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+.cam-chip { flex: none; min-height: 44px; padding: 0 16px; border-radius: 999px; border: 1px solid #ffffff40; background: #ffffff1a; color: #fff; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+.cam-chip.on { background: var(--accent, #2b7bff); border-color: transparent; }
+.cam-chip.big { min-height: 52px; padding: 0 24px; font-size: 17px; }
+.cam-chip:active { transform: scale(.97); }
+.cam-zoom { display: flex; align-items: center; gap: 10px; } .cam-zoom input { flex: 1; accent-color: #fff; }
+.cam-type { display: flex; gap: 8px; } .cam-type input { flex: 1; min-width: 0; height: 44px; border-radius: 999px; border: 1px solid #ffffff40; background: #ffffff1a; color: #fff; padding: 0 16px; font-size: 16px; }
+.cam-panel { position: absolute; z-index: 3; left: 0; right: 0; top: 76px; margin: 0 auto; width: min(92vw, 460px); padding: 20px; border-radius: 18px; background: #14161ce8; backdrop-filter: blur(10px); display: grid; gap: 12px; }
+.cam-panel h3 { margin: 0; } .cam-panel p { margin: 0; line-height: 1.45; } .cam-small { font-size: 13px; opacity: .8; }
+
+/* entry buttons: header icon (desktop) and floating button (phones) */
+.cam-hdr { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.cam-hdr:hover { border-color: var(--accent); }
+.cam-hdr svg, .cam-fab svg, .cam-open-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.cam-fab { display: none; position: fixed; right: 16px; bottom: 18px; z-index: 40; width: 62px; height: 62px; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-fg, #fff);
+  box-shadow: 0 10px 28px #0006; align-items: center; justify-content: center; cursor: pointer; }
+.cam-fab svg { width: 28px; height: 28px; }
+.cam-open .cam-fab { display: none !important; }
+.cam-open-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+@media screen and (max-width: 760px) {
+  .cam-fab { display: inline-flex; }
+  .cam-hdr { display: none; }
+  :root[data-theme="matrix"] .cam-fab { bottom: 84px; }
+}
+
+/* never print the camera UI (a floating button on paper also spills onto an extra page) */
+@media print {
+  .cam, .cam-fab, .cam-hdr, .cam-open-btn { display: none !important; }
+}

@@ -1,0 +1,54 @@
+# Beepstock. Settings come from a .env file next to this file (see .env.example).
+# Defaults are suitable for a first local start; for a server set at least POSTGRES_PASSWORD, TLS_HOSTS and (recommended) API_TOKEN.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pantry
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pantry}
+      POSTGRES_DB: pantry
+      TZ: ${TZ:-Europe/Berlin}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pantry"]
+      interval: 5s
+      retries: 10
+    logging: *logging
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://pantry:${POSTGRES_PASSWORD:-pantry}@db:5432/pantry
+      API_TOKEN: ${API_TOKEN:-}          # optional: protects /api and /ws
+      TZ: ${TZ:-Europe/Berlin}
+      MODE_IDLE_MINUTES: ${MODE_IDLE_MINUTES:-0}   # fall back to DEFAULT_MODE after N idle minutes (0 = never)
+      DEFAULT_MODE: ${DEFAULT_MODE:-consume}
+      HTTPS_PORT: 8443                    # needed for the phone camera scanner (browsers require HTTPS for the camera)
+      TLS_HOSTS: ${TLS_HOSTS:-}           # host name / LAN IP of this server, e.g. server.example.lan,192.168.1.10 (comma separated)
+    ports:
+      - "${BEEPSTOCK_PORT:-8080}:8080"
+      - "${BEEPSTOCK_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - certs:/data/certs
+      - images:/data/images   # local copies of product images
+      - backups:/data/backups # automatic safety backups before imports
+    logging: *logging
+
+volumes:
+  pgdata:
+  certs:
+  images:
+  backups:

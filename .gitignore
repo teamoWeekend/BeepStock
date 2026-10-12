@@ -1,0 +1,16 @@
+node_modules
+dist
+.env
+# local data and tooling
+data/
+*.log
+.DS_Store
+Thumbs.db
+
+# dumps and backups
+*.sql
+backups/
+
+# per-environment env files hold passwords (only the example is committed)
+.env.*
+!.env.example

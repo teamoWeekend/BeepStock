@@ -1,0 +1,260 @@
+/* Beepstock designs. Selected via <html data-theme="navy|space|matrix|classic"> (switcher in the header).
+   "classic" = the plain look from style.css. All themes only override tokens and a few component rules. */
+
+.hdr-right { display: flex; align-items: center; gap: 10px; }
+.hdr-right select { padding: 4px 8px; font-size: 13px; }
+.logo, .ico { display: none; }
+.ico { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* ---------- shared dashboard layout (all new designs) ---------- */
+:root:not([data-theme="classic"]) .ico { display: inline-block; }
+:root:not([data-theme="classic"]) nav button { display: inline-flex; align-items: center; gap: 8px; }
+:root:not([data-theme="classic"]) .card { box-shadow: var(--shadow); }
+
+/* =====================================================================
+   NAVY  - dark blue UI kit, blue accent, compact cards
+   ===================================================================== */
+:root[data-theme="navy"] {
+  color-scheme: dark;
+  --bg: #1b2238; --card: #151b2f; --fg: #e8ebf5; --muted: #8190b0; --line: #283152;
+  --accent: #2b7bff; --accent-fg: #fff; --ok: #2fd39b; --warn: #ffb347; --bad: #ff6b6b;
+  --r: 10px; --shadow: 0 1px 0 #ffffff08 inset, 0 8px 24px #0004;
+}
+:root[data-theme="navy"] body { background: radial-gradient(1200px 600px at 80% -10%, #243060 0%, transparent 60%), var(--bg); }
+:root[data-theme="navy"] header { background: #111628ee; backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); padding: 10px 22px; gap: 22px; }
+:root[data-theme="navy"] .logo { display: block; width: 28px; height: 28px; border-radius: 8px; flex: none;
+  background: linear-gradient(135deg, #2b7bff, #6a5cff); position: relative; }
+:root[data-theme="navy"] .logo::after { content: ""; position: absolute; inset: 6px 6px; background:
+  repeating-linear-gradient(90deg, #fff 0 2px, transparent 2px 4px, #fff 4px 5px, transparent 5px 8px); border-radius: 1px; }
+:root[data-theme="navy"] h1 { font-size: 17px; letter-spacing: .02em; }
+:root[data-theme="navy"] nav { gap: 2px; }
+:root[data-theme="navy"] nav button { padding: 8px 14px; border-radius: 8px; font-weight: 500; }
+:root[data-theme="navy"] nav button:hover { background: #ffffff0d; color: var(--fg); }
+:root[data-theme="navy"] nav button.active { background: var(--accent); box-shadow: 0 6px 18px #2b7bff55; }
+:root[data-theme="navy"] main { max-width: 1180px; padding: 22px; }
+:root[data-theme="navy"] .card, :root[data-theme="navy"] .stat { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); }
+:root[data-theme="navy"] .stat { padding: 14px 16px; position: relative; overflow: hidden; }
+:root[data-theme="navy"] .stat::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); }
+:root[data-theme="navy"] .stat:nth-child(2)::after { background: var(--warn); }
+:root[data-theme="navy"] .stat:nth-child(3)::after { background: var(--ok); }
+:root[data-theme="navy"] .stat:nth-child(4)::after { background: var(--bad); }
+:root[data-theme="navy"] .stat b { font-size: 30px; letter-spacing: -.5px; }
+:root[data-theme="navy"] input, :root[data-theme="navy"] select { background: #0f1424; border: 1px solid var(--line); border-radius: 8px; }
+:root[data-theme="navy"] input:focus, :root[data-theme="navy"] select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px #2b7bff33; }
+:root[data-theme="navy"] button.btn { background: #1d2540; border-color: var(--line); border-radius: 8px; }
+:root[data-theme="navy"] button.btn:hover { border-color: var(--accent); }
+:root[data-theme="navy"] button.btn.primary { background: var(--accent); border-color: var(--accent); box-shadow: 0 6px 16px #2b7bff44; }
+:root[data-theme="navy"] .modes button { background: #1a2240; border: 1px solid var(--line); border-radius: 12px; font-size: 17px; font-weight: 600; }
+:root[data-theme="navy"] .modes button:hover { border-color: var(--accent); }
+:root[data-theme="navy"] .modes button.active { background: linear-gradient(135deg, #2b7bff, #4b62ff); border-color: transparent; box-shadow: 0 10px 26px #2b7bff55; }
+:root[data-theme="navy"] .chip { background: #1a2240; }
+:root[data-theme="navy"] .chip.on { background: #2b7bff1f; }
+:root[data-theme="navy"] .badge { background: #1d2a4a; border-color: #2f3d66; color: #9db4ff; }
+:root[data-theme="navy"] .badge.open { background: #3a2c14; color: var(--warn); }
+:root[data-theme="navy"] table th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+:root[data-theme="navy"] tbody tr:hover td { background: #ffffff08; }
+:root[data-theme="navy"] .group:hover { background: #ffffff05; }
+:root[data-theme="navy"] .log .entry { border-radius: 8px; margin-bottom: 4px; background: #ffffff05; border-bottom: 0; }
+:root[data-theme="navy"] dialog { background: var(--card); border-radius: 14px; box-shadow: 0 30px 80px #000a; }
+:root[data-theme="navy"] #toast { background: #1f9d77; border-radius: 12px; font-size: 20px; }
+
+/* =====================================================================
+   SPACE  - black, starfield, pink accent, wide letter-spacing
+   ===================================================================== */
+:root[data-theme="space"] {
+  color-scheme: dark;
+  --bg: #07070b; --card: #0e0e15; --fg: #f3f3f8; --muted: #8a8a9c; --line: #23232e;
+  --accent: #ff2d6f; --accent-fg: #fff; --ok: #35e0a1; --warn: #ffb020; --bad: #ff4d5e;
+  --r: 10px; --shadow: 0 10px 30px #0008;
+}
+:root[data-theme="space"] body {
+  font-family: "Exo 2", "Segoe UI", system-ui, sans-serif; background-color: var(--bg);
+  background-image:
+    radial-gradient(1.2px 1.2px at 12% 18%, #ffffffcc, transparent), radial-gradient(1px 1px at 33% 72%, #ffffff99, transparent),
+    radial-gradient(1.4px 1.4px at 58% 28%, #fffe, transparent), radial-gradient(1px 1px at 81% 64%, #ffffff88, transparent),
+    radial-gradient(1.2px 1.2px at 92% 12%, #fffc, transparent), radial-gradient(1px 1px at 47% 91%, #ffffff77, transparent),
+    radial-gradient(1px 1px at 7% 44%, #ffffffaa, transparent), radial-gradient(1.5px 1.5px at 66% 83%, #fffd, transparent),
+    radial-gradient(1px 1px at 26% 9%, #ffffff99, transparent), radial-gradient(1.2px 1.2px at 74% 41%, #ffffffbb, transparent),
+    radial-gradient(700px 420px at 100% -5%, #ff2d6f1f, transparent 70%), radial-gradient(600px 400px at -5% 105%, #5b3bff18, transparent 70%);
+  background-size: 337px 331px, 281px 293px, 409px 401px, 331px 347px, 457px 463px, 379px 373px, 523px 509px, 611px 599px, 719px 701px, 577px 587px, auto, auto;
+  background-attachment: fixed;
+}
+:root[data-theme="space"] header { background: transparent; border-bottom: 0; padding: 18px 28px; gap: 20px; position: static; }
+:root[data-theme="space"] .logo { display: block; position: relative; width: 36px; height: 24px; flex: none; }
+:root[data-theme="space"] .logo::before, :root[data-theme="space"] .logo::after { content: ""; position: absolute; top: 0; width: 22px; height: 22px; border-radius: 50%; border: 2px solid #fff; }
+:root[data-theme="space"] .logo::before { left: 0; } :root[data-theme="space"] .logo::after { left: 12px; background: #fff3; }
+:root[data-theme="space"] h1 { font-size: 17px; font-weight: 300; letter-spacing: .42em; text-transform: uppercase; }
+:root[data-theme="space"] nav { justify-content: flex-end; gap: 4px; }
+:root[data-theme="space"] nav button { padding: 8px 14px; border-radius: 6px; font-size: 14px; letter-spacing: .03em; }
+:root[data-theme="space"] nav button:hover { color: #fff; }
+:root[data-theme="space"] nav button.active { background: #fff; color: #000; font-weight: 600; }
+:root[data-theme="space"] main { max-width: 1120px; padding: 10px 28px 40px; }
+:root[data-theme="space"] .card, :root[data-theme="space"] .stat { background: linear-gradient(180deg, #11111a, #0c0c12); border: 1px solid var(--line); border-radius: var(--r); }
+:root[data-theme="space"] .stat { padding: 16px 18px; }
+:root[data-theme="space"] .stat b { font-size: 32px; font-weight: 300; letter-spacing: .02em; }
+:root[data-theme="space"] .stat span { text-transform: uppercase; letter-spacing: .12em; font-size: 11px; }
+:root[data-theme="space"] h2, :root[data-theme="space"] h3 { font-weight: 500; letter-spacing: .04em; }
+:root[data-theme="space"] .card > h3:first-child, :root[data-theme="space"] .card > strong:first-child { border-left: 2px solid var(--accent); padding-left: 10px; display: inline-block; }
+:root[data-theme="space"] input, :root[data-theme="space"] select { background: #0a0a10; border: 1px solid #2a2a37; border-radius: 6px; }
+:root[data-theme="space"] input:focus, :root[data-theme="space"] select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px #ff2d6f26; }
+:root[data-theme="space"] button.btn { background: transparent; border: 1px solid #34344a; border-radius: 6px; }
+:root[data-theme="space"] button.btn:hover { border-color: #fff; }
+:root[data-theme="space"] button.btn.primary { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 22px #ff2d6f55; }
+:root[data-theme="space"] .modes button { background: #0b0b12; border: 1px solid #2a2a38; border-radius: 10px; font-weight: 500; letter-spacing: .03em; }
+:root[data-theme="space"] .modes button:hover { border-color: #ff2d6f99; }
+:root[data-theme="space"] .modes button.active { background: #ff2d6f; border-color: #ff2d6f; box-shadow: 0 0 34px #ff2d6f66; }
+:root[data-theme="space"] .chip { background: transparent; }
+:root[data-theme="space"] .chip.on { background: #ff2d6f1c; }
+:root[data-theme="space"] .badge { background: #1a1a25; color: #d9d9e6; }
+:root[data-theme="space"] table th { text-transform: uppercase; letter-spacing: .1em; font-size: 11px; color: var(--muted); }
+:root[data-theme="space"] .tabs2 .btn.active { background: #fff; color: #000; border-color: #fff; }
+:root[data-theme="space"] dialog { background: #0d0d14; border-radius: 12px; box-shadow: 0 0 0 1px #2a2a38, 0 30px 80px #000c; }
+:root[data-theme="space"] #toast { background: #ff2d6f; box-shadow: 0 0 40px #ff2d6f66; border-radius: 10px; font-size: 20px; letter-spacing: .02em; }
+:root[data-theme="space"] #toast.warn { background: var(--warn); color: #000; }
+
+/* =====================================================================
+   MATRIX - light lavender dashboard: rounded app frame, icon sidebar, violet top bar
+   ===================================================================== */
+:root[data-theme="matrix"] {
+  color-scheme: light;
+  --bg: #e0e1ef; --card: #ffffff; --fg: #2b2a63; --muted: #7c80a8; --line: #ebebf6;
+  --accent: #7c6cf8; --accent-fg: #fff; --ok: #35c28b; --warn: #ffb25b; --bad: #ff6b8a;
+  --r: 20px; --shadow: 0 8px 24px rgba(66, 54, 150, .08);
+  --side-w: 84px; --top-h: 64px;
+}
+:root[data-theme="matrix"] body { background: linear-gradient(180deg, #5c4bdd 0%, #9a8de2 100%) fixed; min-height: 100vh; }
+:root[data-theme="matrix"] #app {
+  display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); grid-template-rows: var(--top-h) minmax(0, 1fr);
+  max-width: 1440px; margin: 22px auto; min-height: calc(100vh - 44px); border-radius: 38px; overflow: hidden;
+  background: var(--bg); box-shadow: 0 30px 80px rgba(40, 24, 120, .35);
+}
+:root[data-theme="matrix"] header { display: contents; }
+:root[data-theme="matrix"] .logo { grid-area: 1 / 1; display: grid; place-items: center; background: #fff; position: relative; }
+:root[data-theme="matrix"] .logo::before { content: ""; width: 34px; height: 34px; border-radius: 50%; border: 4px solid transparent;
+  border-top-color: #5c4bdd; border-right-color: #5b9bff; border-bottom-color: #ff6b8a; transform: rotate(20deg); }
+:root[data-theme="matrix"] h1 { grid-area: 1 / 2; margin: 0; background: #8274ff; color: #fff; display: flex; align-items: center; padding: 0 28px;
+  font-size: 15px; letter-spacing: .08em; text-transform: uppercase; font-weight: 800; }
+:root[data-theme="matrix"] .hdr-right { grid-area: 1 / 2; justify-self: end; align-self: center; padding-right: 24px; z-index: 2; }
+:root[data-theme="matrix"] .hdr-right select { background: #ffffff26; color: #fff; border: 1px solid #ffffff55; border-radius: 999px; }
+:root[data-theme="matrix"] .hdr-right select option { color: #2b2a63; }
+:root[data-theme="matrix"] .conn.on { color: #b6ffd9; } :root[data-theme="matrix"] .conn.off { color: #ffd0d9; }
+:root[data-theme="matrix"] nav { grid-area: 2 / 1; flex: none; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 6px;
+  background: #fff; padding: 22px 0; position: relative; }
+:root[data-theme="matrix"] nav button { justify-content: center; padding: 16px 0; border-radius: 0; color: #8c90b8; position: relative; }
+:root[data-theme="matrix"] nav button .lbl { display: none; }
+:root[data-theme="matrix"] nav button .ico { width: 26px; height: 26px; }
+:root[data-theme="matrix"] nav button:hover { color: #7c6cf8; }
+:root[data-theme="matrix"] nav button.active { background: #ecebff; color: #7c6cf8; }
+:root[data-theme="matrix"] nav button.active::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: #7c6cf8; }
+:root[data-theme="matrix"] main { grid-area: 2 / 2; max-width: none; margin: 0; padding: 26px 30px 36px; overflow: auto; }
+:root[data-theme="matrix"] .card, :root[data-theme="matrix"] .stat { border: 0; border-radius: var(--r); background: #fff; }
+:root[data-theme="matrix"] .card { padding: 18px 20px; }
+:root[data-theme="matrix"] .stat { padding: 16px 20px; }
+:root[data-theme="matrix"] .stat b { font-size: 34px; color: #7c6cf8; font-weight: 800; letter-spacing: -.5px; }
+:root[data-theme="matrix"] .stat:nth-child(2) b { color: #ffa24c; } :root[data-theme="matrix"] .stat:nth-child(3) b { color: #4f9bff; } :root[data-theme="matrix"] .stat:nth-child(4) b { color: #ff6b8a; }
+:root[data-theme="matrix"] .stat span { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; font-weight: 700; }
+:root[data-theme="matrix"] h2, :root[data-theme="matrix"] h3, :root[data-theme="matrix"] .card > strong:first-child { text-transform: uppercase; letter-spacing: .03em; color: #2b2a63; font-weight: 800; }
+:root[data-theme="matrix"] input, :root[data-theme="matrix"] select { background: #f3f3fb; border: 1px solid transparent; border-radius: 999px; padding: 9px 16px; }
+:root[data-theme="matrix"] input:focus, :root[data-theme="matrix"] select:focus { outline: none; border-color: #7c6cf8; background: #fff; box-shadow: 0 0 0 3px #7c6cf826; }
+:root[data-theme="matrix"] input[type="checkbox"], :root[data-theme="matrix"] input[type="radio"] { padding: 0; accent-color: #7c6cf8; }
+:root[data-theme="matrix"] button.btn { border: 0; background: #f0effc; color: #5b4fd6; border-radius: 999px; padding: 8px 16px; font-weight: 600; }
+:root[data-theme="matrix"] button.btn:hover { background: #e5e3fb; }
+:root[data-theme="matrix"] button.btn.primary { background: linear-gradient(135deg, #7c6cf8, #5b9bff); color: #fff; box-shadow: 0 8px 18px #7c6cf855; }
+:root[data-theme="matrix"] button.btn.danger { color: #ff4f78; background: #fff0f3; }
+:root[data-theme="matrix"] .modes button { background: #f3f3fb; border: 0; border-radius: 18px; color: #2b2a63; font-weight: 700; }
+:root[data-theme="matrix"] .modes button:hover { background: #ebe9ff; }
+:root[data-theme="matrix"] .modes button.active { background: linear-gradient(135deg, #7c6cf8, #5b9bff); color: #fff; box-shadow: 0 12px 26px #7c6cf866; }
+:root[data-theme="matrix"] .chip { background: #f3f3fb; border: 0; }
+:root[data-theme="matrix"] .chip.on { background: #ecebff; }
+:root[data-theme="matrix"] .badge { background: #efeefc; border: 0; color: #5b4fd6; font-weight: 600; }
+:root[data-theme="matrix"] .badge.open { background: #fff3e4; color: #e08a1e; }
+:root[data-theme="matrix"] .tabs2 .btn.active { background: #7c6cf8; color: #fff; }
+:root[data-theme="matrix"] table { border-collapse: separate; border-spacing: 0 6px; }
+:root[data-theme="matrix"] td { border: 0; background: #f1f1f9; }
+:root[data-theme="matrix"] td:first-child { border-radius: 12px 0 0 12px; } :root[data-theme="matrix"] td:last-child { border-radius: 0 12px 12px 0; }
+:root[data-theme="matrix"] th { border: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #2b2a63; }
+:root[data-theme="matrix"] .group { border-bottom: 1px solid #f0f0f8; }
+:root[data-theme="matrix"] .log .entry { border-bottom: 0; background: #f6f6fc; border-radius: 12px; margin-bottom: 6px; }
+:root[data-theme="matrix"] .bar { background: #ebebf6; border-radius: 99px; }
+:root[data-theme="matrix"] .b-ok { background: #7c6cf8; } :root[data-theme="matrix"] .b-bad { background: #ff6b8a; }
+:root[data-theme="matrix"] .thumb { border-radius: 12px; background: #f3f3fb; }
+:root[data-theme="matrix"] dialog { border: 0; border-radius: 28px; box-shadow: 0 30px 80px #2a1a7866; }
+:root[data-theme="matrix"] dialog::backdrop { background: #2b1f8a66; }
+:root[data-theme="matrix"] #toast { background: #7c6cf8; border-radius: 22px; box-shadow: 0 14px 40px #4b3ad088; }
+:root[data-theme="matrix"] #toast.warn { background: #ffa24c; } :root[data-theme="matrix"] #toast.error { background: #ff5a7e; }
+:root[data-theme="matrix"] .preview { background: #d7d8ea; }
+@media screen and (max-width: 760px) {
+  :root[data-theme="matrix"] body { background: var(--bg); }
+  :root[data-theme="matrix"] #app { display: block; margin: 0; border-radius: 0; min-height: 100vh; }
+  :root[data-theme="matrix"] header { display: flex; background: #8274ff; padding: 12px 16px; position: static; }
+  :root[data-theme="matrix"] .logo { display: none; }
+  :root[data-theme="matrix"] h1 { background: none; padding: 0; flex: 1; }
+  :root[data-theme="matrix"] .hdr-right { padding: 0; }
+  :root[data-theme="matrix"] nav { position: fixed; bottom: 0; left: 0; right: 0; z-index: 30; flex-direction: row; padding: 0; box-shadow: 0 -6px 24px #2b2a6322; justify-content: space-around; }
+  :root[data-theme="matrix"] nav button { flex: 1; padding: 12px 0; }
+  :root[data-theme="matrix"] nav button.active::before { left: 0; right: 0; top: 0; bottom: auto; width: auto; height: 3px; }
+  :root[data-theme="matrix"] main { padding: 16px 14px 90px; overflow: visible; }
+}
+
+/* ---------- small screens, all new designs ---------- */
+@media screen and (max-width: 760px) {
+  :root[data-theme="navy"] header, :root[data-theme="space"] header { padding: 10px 14px; gap: 10px; }
+  :root[data-theme="navy"] nav button .lbl, :root[data-theme="space"] nav button .lbl { font-size: 13px; }
+  :root[data-theme="navy"] nav button, :root[data-theme="space"] nav button { padding: 8px 10px; }
+  :root[data-theme="navy"] main, :root[data-theme="space"] main { padding: 14px; }
+}
+
+/* ---------- printing: never apply a dark design to paper ---------- */
+@media print {
+  :root[data-theme] body { background: #fff !important; color: #000 !important; }
+  :root[data-theme] #app { display: block !important; margin: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; }
+  :root[data-theme] main { padding: 0 !important; overflow: visible !important; }
+}
+
+/* ---------- compact scan page (all designs) ---------- */
+:root[data-theme] .stats.compact { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+:root[data-theme] .stats.compact .stat { padding: 8px 12px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+:root[data-theme] .stats.compact .stat b { font-size: 22px; display: inline; letter-spacing: 0; }
+:root[data-theme] .stats.compact .stat span { font-size: 12px; letter-spacing: .04em; }
+:root[data-theme] .scan-card { padding: 12px; }
+:root[data-theme] .modes { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 6px; margin: 0 0 10px; }
+:root[data-theme] .modes button { padding: 11px 6px; font-size: 15px; border-radius: 10px; }
+:root[data-theme="space"] .modes button.active, :root[data-theme="navy"] .modes button.active { box-shadow: 0 4px 16px #0006; }
+:root[data-theme] .pending { gap: 6px; margin: 0 0 10px; align-items: center; }
+:root[data-theme] .mode-hint { margin-left: auto; font-size: 13px; }
+:root[data-theme] .scan-form { flex-wrap: nowrap; }
+:root[data-theme] .scan-form input { min-width: 0; }
+:root[data-theme] .card.log { padding: 6px 12px; }
+:root[data-theme] .card.log .entry { padding-top: 6px; padding-bottom: 6px; }
+@media screen and (max-width: 760px) {
+  :root[data-theme] .stats.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :root[data-theme] .modes { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  :root[data-theme] .modes button { padding: 10px 2px; font-size: 13px; }
+  :root[data-theme] .mode-hint { flex: 1 0 100%; margin-left: 0; }
+  :root[data-theme] .scan-form { flex-wrap: wrap; }
+  :root[data-theme] .scan-form .cam-open-btn { display: none; } /* the round camera button is always at hand on phones */
+}
+
+/* fit seven tabs + camera button in one header row */
+:root[data-theme="space"] header { gap: 14px; }
+:root[data-theme="space"] h1 { letter-spacing: .3em; }
+:root[data-theme="space"] nav button { padding: 8px 10px; }
+:root[data-theme="navy"] header { gap: 16px; }
+:root[data-theme="navy"] nav button { padding: 8px 11px; }
+@media screen and (max-width: 760px) {
+  :root[data-theme] .scan-form input { flex: 1 0 100%; }
+  :root[data-theme] .scan-form .btn { flex: 1; }
+}
+
+/* eight tabs in one row (Space has the widest logo and letter-spacing) */
+:root[data-theme="space"] h1 { font-size: 15px; letter-spacing: .2em; }
+:root[data-theme="space"] header { gap: 10px; padding-left: 20px; padding-right: 20px; }
+:root[data-theme="space"] nav button { padding: 8px 7px; gap: 6px; font-size: 13.5px; }
+:root[data-theme="space"] nav { gap: 0; }
+
+/* ---------- brand logo in the header (all designs) ---------- */
+:root[data-theme] .logo { display: block; position: static; width: 32px; height: 32px; flex: none; border-radius: 0; background: url(/brand/logo-icon.svg) center / contain no-repeat; }
+:root[data-theme] .logo::before, :root[data-theme] .logo::after { content: none; }
+:root[data-theme="matrix"] .logo { grid-area: 1 / 1; width: auto; height: auto; display: block; background: #fff url(/brand/logo-icon.svg) center / 42px 42px no-repeat; }
+@media screen and (max-width: 760px) { :root[data-theme="matrix"] .logo { display: none; } }
+@media print { .logo { display: none !important; } }

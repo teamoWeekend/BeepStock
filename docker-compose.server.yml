@@ -1,0 +1,60 @@
+# Beepstock for a server: ready to run, no source code and no build needed.
+# It pulls the prebuilt image from the GitHub Container Registry (built by .github/workflows/docker.yml).
+#
+#   1. docker login ghcr.io -u <github-user>        (password = a token with read:packages; the package is private)
+#   2. put this file and a .env (copy of .env.example) in one folder on the server and edit the .env
+#   3. docker compose -f docker-compose.server.yml up -d
+#   update later: docker compose -f docker-compose.server.yml pull && docker compose -f docker-compose.server.yml up -d
+# (Name it docker-compose.yml on the server and you can leave out "-f ...".)
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pantry
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the .env file}
+      POSTGRES_DB: pantry
+      TZ: ${TZ:-Europe/Berlin}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pantry"]
+      interval: 5s
+      retries: 10
+    logging: *logging
+
+  app:
+    image: ${BEEPSTOCK_IMAGE:-ghcr.io/teamoweekend/beepstock:latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://pantry:${POSTGRES_PASSWORD}@db:5432/pantry
+      API_TOKEN: ${API_TOKEN:-}          # optional: protects /api and /ws
+      TZ: ${TZ:-Europe/Berlin}
+      MODE_IDLE_MINUTES: ${MODE_IDLE_MINUTES:-0}
+      DEFAULT_MODE: ${DEFAULT_MODE:-consume}
+      HTTPS_PORT: 8443                    # phone camera needs HTTPS (self-signed certificate)
+      TLS_HOSTS: ${TLS_HOSTS:-}           # host name / IP of this server, e.g. server.example.lan,192.168.1.10
+    ports:
+      - "${BEEPSTOCK_PORT:-8080}:8080"
+      - "${BEEPSTOCK_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - certs:/data/certs
+      - images:/data/images
+      - backups:/data/backups
+    logging: *logging
+
+volumes:
+  pgdata:
+  certs:
+  images:
+  backups:

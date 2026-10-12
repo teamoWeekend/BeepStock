@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Beepstock</title>
+  <meta name="description" content="Beepstock: scan it, stock it, waste less. Self-hosted pantry manager with barcode scanner.">
+  <meta name="theme-color" content="#2f7dff">
+  <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png">
+  <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <script>
+    // apply the saved design before first paint (no flash)
+    var q = new URLSearchParams(location.search).get('theme'); // ?theme=space|matrix|navy|classic overrides the saved choice
+    try { document.documentElement.dataset.theme = q || localStorage.getItem('pantry_theme') || 'navy'; } catch (e) { document.documentElement.dataset.theme = q || 'navy'; }
+  </script>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/themes.css">
+  <link rel="stylesheet" href="/camera.css">
+  <link rel="stylesheet" href="/print.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <span class="logo" aria-hidden="true"></span>
+      <h1>Beepstock</h1>
+      <nav id="tabs">
+        <button data-tab="scan" class="active" title="Scannen"><svg class="ico" viewBox="0 0 24 24"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2M8 8v8M12 8v8M16 8v8"/></svg><span class="lbl">Scannen</span></button>
+        <button data-tab="stock" title="Vorrat"><svg class="ico" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8M12 13v8"/></svg><span class="lbl">Vorrat</span></button>
+        <button data-tab="inventory" title="Inventur"><svg class="ico" viewBox="0 0 24 24"><path d="M9 4h6v3H9zM7 5.5H5a1 1 0 0 0-1 1V20a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V6.5a1 1 0 0 0-1-1h-2"/><path d="m9 14 2 2 4-4"/></svg><span class="lbl">Inventur</span></button>
+        <button data-tab="shopping" title="Einkauf"><svg class="ico" viewBox="0 0 24 24"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M3 4h2l2.4 11h11l2-8H6.2"/></svg><span class="lbl">Einkauf</span></button>
+        <button data-tab="history" title="Verlauf und Auswertung"><svg class="ico" viewBox="0 0 24 24"><path d="M4 20V11M10 20V4M16 20v-6M22 20H2"/></svg><span class="lbl">Verlauf</span></button>
+        <button data-tab="products" title="Produkte"><svg class="ico" viewBox="0 0 24 24"><path d="M3 12V4h8l9 9-8 8-9-9z"/><circle cx="7.5" cy="8.5" r="1"/></svg><span class="lbl">Produkte</span></button>
+        <button data-tab="codes" title="Steuercodes"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v7M14 20h3"/></svg><span class="lbl">Steuercodes</span></button>
+        <button data-tab="settings" title="Einstellungen"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span class="lbl">Einstellungen</span></button>
+      </nav>
+      <div class="hdr-right">
+        <button id="camHdr" class="cam-hdr" type="button" title="Mit der Kamera scannen"><svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg>Kamera</button>
+        <span id="conn" class="conn off" title="Verbindung">●</span>
+      </div>
+    </header>
+    <main>
+      <section id="tab-scan"></section>
+      <section id="tab-stock" hidden></section>
+      <section id="tab-inventory" hidden></section>
+      <section id="tab-shopping" hidden></section>
+      <section id="tab-history" hidden></section>
+      <section id="tab-products" hidden></section>
+      <section id="tab-codes" hidden></section>
+      <section id="tab-settings" hidden></section>
+    </main>
+  </div>
+  <button id="camFab" class="cam-fab" type="button" aria-label="Mit der Kamera scannen"><svg viewBox="0 0 24 24"><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
+  <div id="toast" hidden></div>
+  <dialog id="dlg"></dialog>
+  <script src="/vendor/JsBarcode.all.min.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

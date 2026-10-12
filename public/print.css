@@ -1,0 +1,60 @@
+/* Printable sheets (see sheets.js). Paper = A4, no printer margins; print at 100 % ("Tatsächliche Größe"). */
+@page { size: A4 portrait; margin: 0; }
+
+.sheet {
+  width: 210mm; height: 297mm; box-sizing: border-box; position: relative; overflow: hidden;
+  background: #fff; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+}
+.sheet svg { display: block; }
+
+/* ---------- fancy overview ---------- */
+.sheet.overview { padding: 9mm 10mm 8mm; display: flex; flex-direction: column; gap: 3mm; }
+.ov-head { display: flex; align-items: center; gap: 4mm; padding: 3.5mm 5mm; border-radius: 4mm; color: #fff;
+  background: linear-gradient(120deg, #1e3a8a, #2563eb 55%, #06b6d4); }
+.ov-logo { width: 12mm; height: 12mm; border-radius: 3mm; background: #fff; display: grid; place-items: center; flex: none; }
+.ov-logo svg { width: 9mm; height: 9mm; }
+.ov-title { flex: 1; }
+.ov-title h1 { margin: 0; font-size: 21pt; letter-spacing: .4px; line-height: 1.05; }
+.ov-title div { font-size: 8.5pt; opacity: .9; }
+.ov-steps { margin: 0; padding: 0; list-style: none; counter-reset: s; font-size: 7pt; display: grid; gap: .6mm; }
+.ov-steps li { counter-increment: s; display: flex; align-items: center; gap: 1.5mm; }
+.ov-steps li::before { content: counter(s); width: 3.4mm; height: 3.4mm; border-radius: 50%; background: rgba(255,255,255,.95); color: #1e3a8a;
+  font-weight: 700; font-size: 6pt; display: grid; place-items: center; }
+
+.ov-group { background: var(--t); border-radius: 3mm; padding: 2.2mm 3mm 2.8mm; break-inside: avoid; }
+.ov-gh { display: flex; align-items: baseline; gap: 2.5mm; font-weight: 800; font-size: 9.5pt; color: var(--c); margin-bottom: 1.6mm; }
+.ov-gh .hint { font-weight: 500; font-size: 6.5pt; color: #5b6472; }
+.ov-grid { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: 2mm; }
+.ov-card { background: #fff; border: .25mm solid #d9dee6; border-left: 1.3mm solid var(--c); border-radius: 2mm;
+  padding: 1.3mm 2mm 1.1mm; display: flex; flex-direction: column; gap: .8mm; min-width: 0; break-inside: avoid; }
+.ov-card .lbl { display: flex; align-items: center; gap: 1.3mm; font-size: 7.8pt; font-weight: 700; white-space: nowrap; overflow: hidden; }
+.ov-card .ic { font-size: 8.5pt; line-height: 1; }
+.ov-card svg { margin: 0 auto; height: var(--bh); }
+.ov-card .cd { font: 5.8pt ui-monospace, Consolas, monospace; text-align: center; color: #596070; letter-spacing: .5px; }
+.ov-foot { margin-top: auto; display: flex; justify-content: space-between; font-size: 6.5pt; color: #6b7380; padding: 0 1mm; }
+
+/* ---------- label paper ---------- */
+.sheet.labels { background: #fff; }
+.lab { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; align-items: center; }
+.lab.raster { outline: .2mm solid #999; outline-offset: -.1mm; }
+.lab svg { flex: none; }
+.lab.fancy { align-items: stretch; }
+.lab.fancy svg { align-self: center; }
+.lab .stripe { position: absolute; left: 0; top: 0; bottom: 0; }
+.lab .lt { display: flex; align-items: center; gap: 1mm; flex: none; min-width: 0; padding-left: 1mm; }
+.lab .lt .ic { font-size: 8pt; line-height: 1; flex: none; }
+.lab .lt .n { flex: 1; min-width: 0; font-weight: 800; font-size: 7.6pt; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #000; }
+.lab .lt .c { font: 5.4pt ui-monospace, Consolas, monospace; color: #444; flex: none; }
+.lab .ltx { flex: none; width: 100%; text-align: center; font-size: 6.6pt; line-height: 2.6mm; white-space: nowrap; overflow: hidden; margin-top: auto; color: #000; }
+
+/* ---------- screen preview ---------- */
+@media screen {
+  .preview { background: #d9dce1; border-radius: 12px; padding: 14px; display: flex; flex-direction: column; align-items: center; gap: 14px; overflow: auto; }
+  .preview .sheet { zoom: .62; box-shadow: 0 4px 18px #0004; flex: none; }
+}
+@media print {
+  .preview { padding: 0; display: block; background: none; }
+  .preview .sheet { zoom: 1; box-shadow: none; break-after: page; page-break-after: always; }
+  .preview .sheet:last-child { break-after: auto; page-break-after: auto; }
+}
