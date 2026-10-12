@@ -152,15 +152,15 @@ Eine leere Sicherung ersetzt nie etwas. Bilder sind nicht Teil der Datei, sie we
 
 ## Betrieb auf einem Server (eine Compose-Datei, eine .env)
 
-Es genügen zwei Dateien auf dem Server: `docker-compose.yml` und `.env`. Docker baut die App dabei direkt aus dem GitHub-Repository, es gibt weder
-eine Registry noch ein Zugangstoken zum Ziehen eines Images noch Hilfsskripte. Der Server braucht nur Docker mit Compose v2 und die Ports 8080 und 8443.
+Es genügen zwei Dateien auf dem Server: `docker-compose.yml` und `.env`. Der Server baut nichts, er lädt das fertige Image
+`ghcr.io/teamoweekend/beepstock` (öffentlich, ohne Login), das GitHub Actions bei jedem Push auf `main` für amd64 und arm64 baut.
+Der Server braucht nur Docker mit Compose v2 und die Ports 8080 und 8443.
 
 1. **Ordner anlegen und Compose-Datei holen**:
    ```sh
    mkdir -p ~/beepstock && cd ~/beepstock
    curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/teamoWeekend/BeepStock/main/docker-compose.yml
    ```
-   (Bei einem privaten Repository stattdessen die Datei per `scp` vom PC kopieren oder das Repository klonen.)
 2. **`.env` anlegen**:
    ```sh
    cat > .env <<EOF
@@ -168,14 +168,11 @@ eine Registry noch ein Zugangstoken zum Ziehen eines Images noch Hilfsskripte. D
    POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '=+/')
    TLS_HOSTS=server.example.lan,192.168.1.10
    API_TOKEN=
-   BEEPSTOCK_SOURCE=https://github.com/teamoWeekend/BeepStock.git#main
    EOF
    chmod 600 .env
    ```
    `TLS_HOSTS`: Name und IP des Servers (HTTPS-Zertifikat für die Handy-Kamera). `API_TOKEN` leer lassen oder ein langes Geheimnis setzen.
-   Ist das Repository **privat**, setze `BEEPSTOCK_SOURCE=https://<Token>@github.com/teamoWeekend/BeepStock.git#main` mit einem feingranularen Token
-   (nur dieses Repository, Berechtigung „Contents: Read-only“) und halte die `.env` privat.
-3. **Starten**: `docker compose up -d --build` (beim ersten Mal baut Docker das Image, das dauert 1 bis 2 Minuten).
+3. **Starten**: `docker compose up -d` (lädt beim ersten Mal die Images).
 4. **Prüfen**: `docker compose ps` (beide Dienste „healthy“), `http://<server>:8080` und `https://<server>:8443` (Zertifikatswarnung einmal pro Gerät bestätigen).
 
 ### Daten von der alten Installation mitnehmen
@@ -195,7 +192,7 @@ docker compose up -d db
 docker compose cp beepstock.sql db:/tmp/restore.sql
 docker compose exec -T db psql -U pantry -d pantry -v ON_ERROR_STOP=1 -q -f /tmp/restore.sql
 docker compose exec -T db rm /tmp/restore.sql
-docker compose up -d --build
+docker compose up -d
 ```
 
 Der Dump enthält alles inklusive Verlauf, Produktbilder und das HTTPS-Zertifikat werden neu erzeugt. Alternativ geht die JSON-Datensicherung unter
@@ -206,8 +203,9 @@ Zum Schluss die alte Installation mit `docker compose down` stoppen (die Volumes
 
 ### Betrieb
 
-* **Update**: `docker compose up -d --build`. Docker holt dabei den neuesten Stand des Branchs aus `BEEPSTOCK_SOURCE` und baut neu, die Daten bleiben erhalten.
-  Eine bestimmte Version baust du mit `#<tag>` oder `#<commit>` statt `#main`.
+* **Update**: `docker compose pull && docker compose up -d`. Das lädt das neueste Image von `main`, die Daten bleiben erhalten.
+  Eine bestimmte Version legst du mit `BEEPSTOCK_IMAGE=ghcr.io/teamoweekend/beepstock:<tag>` in der `.env` fest
+  (Tags: `latest`, `sha-<Commit kurz>`, bei Git-Tags wie `v1.2.3` die Version).
 * **Logs**: `docker compose logs -f app` (Rotation auf 3 × 10 MB begrenzt). Nach einem Neustart des Servers starten die Container von selbst
   (`restart: unless-stopped`, der Docker-Dienst muss beim Boot laufen).
 * **Backup** (auf dem Server, z. B. per Cron, hier jede Nacht um 03:30; die Dumps der letzten 14 Tage bleiben):
@@ -215,9 +213,9 @@ Zum Schluss die alte Installation mit `docker compose down` stoppen (die Volumes
   30 3 * * *  cd /home/benutzer/beepstock && docker compose exec -T db pg_dump -U pantry --clean --if-exists --no-owner pantry | gzip > /home/benutzer/backups/beepstock-$(date +\%F).sql.gz && find /home/benutzer/backups -name 'beepstock-*.sql.gz' -mtime +14 -delete
   ```
   Wiederherstellen: `gunzip -c beepstock-<Datum>.sql.gz | docker compose exec -T db psql -U pantry -d pantry -v ON_ERROR_STOP=1 -q`.
-* **Von deinem PC aus steuern** (optional): per SSH auf dem Server arbeiten (`ssh benutzer@server.example.lan`, dann die Befehle dort). Ein Docker-Kontext
-  (`docker context create …`) funktioniert mit einer Git-Adresse als `BEEPSTOCK_SOURCE` **nicht unter Windows**: Docker Compose 5.1 behandelt die Adresse dort als Dateipfad
-  und bricht mit „CreateFile … syntax is incorrect“ ab. Auf Linux und macOS gibt es das Problem nicht, und ein direkter `docker buildx build <Git-Adresse>` geht auch unter Windows.
+* **Von deinem PC aus steuern** (optional): per SSH auf dem Server arbeiten (`ssh benutzer@server.example.lan`, dann die Befehle dort) oder mit einem
+  Docker-Kontext: `docker context create myserver --docker "host=ssh://benutzer@server.example.lan"`, danach in einem Ordner mit
+  `docker-compose.yml` und `.env`: `docker --context myserver compose pull` und `docker --context myserver compose up -d`.
 
 ## Konfiguration (Umgebungsvariablen)
 

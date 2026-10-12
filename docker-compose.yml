@@ -1,7 +1,8 @@
 # Beepstock: one compose file for your PC and for a server. Settings come from a .env file next to it (see .env.example).
 #
-#   Local, from a checkout of the repository:          docker compose up -d --build
-#   Server, source built straight from GitHub:         set BEEPSTOCK_SOURCE in the .env, then  docker compose up -d --build
+#   Server (only this file and the .env, prebuilt image):   docker compose up -d
+#                                            update later:   docker compose pull && docker compose up -d
+#   Local, from a checkout (builds the image itself):        docker compose up -d --build
 #
 # Required in the .env: POSTGRES_PASSWORD. Recommended on a server: TLS_HOSTS (phone camera) and API_TOKEN.
 
@@ -29,9 +30,9 @@ services:
     logging: *logging
 
   app:
-    build:
-      # "." = this folder. On a server without a checkout: the git URL of the repository, see BEEPSTOCK_SOURCE in .env.example
-      context: ${BEEPSTOCK_SOURCE:-.}
+    # Prebuilt by GitHub Actions (.github/workflows/ci.yml). "--build" builds it from this folder instead.
+    image: ${BEEPSTOCK_IMAGE:-ghcr.io/teamoweekend/beepstock:latest}
+    build: .
     restart: unless-stopped
     depends_on:
       db:
