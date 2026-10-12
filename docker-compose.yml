@@ -1,5 +1,9 @@
-# Beepstock. Settings come from a .env file next to this file (see .env.example).
-# Defaults are suitable for a first local start; for a server set at least POSTGRES_PASSWORD, TLS_HOSTS and (recommended) API_TOKEN.
+# Beepstock: one compose file for your PC and for a server. Settings come from a .env file next to it (see .env.example).
+#
+#   Local, from a checkout of the repository:          docker compose up -d --build
+#   Server, source built straight from GitHub:         set BEEPSTOCK_SOURCE in the .env, then  docker compose up -d --build
+#
+# Required in the .env: POSTGRES_PASSWORD. Recommended on a server: TLS_HOSTS (phone camera) and API_TOKEN.
 
 x-logging: &logging
   driver: json-file
@@ -13,7 +17,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: pantry
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pantry}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the .env file}
       POSTGRES_DB: pantry
       TZ: ${TZ:-Europe/Berlin}
     volumes:
@@ -25,13 +29,15 @@ services:
     logging: *logging
 
   app:
-    build: .
+    build:
+      # "." = this folder. On a server without a checkout: the git URL of the repository, see BEEPSTOCK_SOURCE in .env.example
+      context: ${BEEPSTOCK_SOURCE:-.}
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://pantry:${POSTGRES_PASSWORD:-pantry}@db:5432/pantry
+      DATABASE_URL: postgres://pantry:${POSTGRES_PASSWORD}@db:5432/pantry
       API_TOKEN: ${API_TOKEN:-}          # optional: protects /api and /ws
       TZ: ${TZ:-Europe/Berlin}
       MODE_IDLE_MINUTES: ${MODE_IDLE_MINUTES:-0}   # fall back to DEFAULT_MODE after N idle minutes (0 = never)

@@ -16,10 +16,11 @@ Node.js + TypeScript (Fastify), PostgreSQL, Web-UI ohne Build-Schritt, Betrieb p
 ## Start
 
 ```sh
+cp .env.example .env     # POSTGRES_PASSWORD anpassen
 docker compose up -d --build
 ```
 
-Einstellungen für Ports, Passwort, Hostnamen und Token stehen in einer `.env` (Vorlage: `.env.example`).
+Einstellungen für Ports, Passwort, Hostnamen und Token stehen in der `.env` (Vorlage: `.env.example`).
 
 Dann `http://<host>:8080` im Browser öffnen (Tablet/Handy am Kühlschrank, Seite offen lassen).
 Optional: `API_TOKEN=geheim` und `POSTGRES_PASSWORD=…` in einer `.env` neben der `docker-compose.yml`.
@@ -149,22 +150,33 @@ entfernt oder gemeldet). Vor jedem Import legt der Server automatisch eine Siche
 die letzten 5, in den Einstellungen herunterladbar). Das Schreiben läuft in einer Transaktion: bei einem Fehler bleibt alles unverändert.
 Eine leere Sicherung ersetzt nie etwas. Bilder sind nicht Teil der Datei, sie werden nach dem Import neu geladen.
 
-## Betrieb auf einem Server (nur Docker)
+## Betrieb auf einem Server (eine Compose-Datei, eine .env)
 
-Alles läuft über Docker Compose, es gibt keine Hilfsskripte. Der Server braucht Docker mit Compose v2 und die Ports 8080 und 8443.
-Eine GitHub-Action (`.github/workflows/docker.yml`) führt bei jedem Push auf `main` die Tests aus, baut das Image (Intel und ARM) und legt es in der
-GitHub Container Registry ab: `ghcr.io/teamoweekend/beepstock:latest` (privat, weil das Repository privat ist). Der Server zieht es mit der
-eigenständigen Datei `docker-compose.server.yml`, ohne Quellcode und ohne Build.
+Es genügen zwei Dateien auf dem Server: `docker-compose.yml` und `.env`. Docker baut die App dabei direkt aus dem GitHub-Repository, es gibt weder
+eine Registry noch ein Zugangstoken zum Ziehen eines Images noch Hilfsskripte. Der Server braucht nur Docker mit Compose v2 und die Ports 8080 und 8443.
 
-### Erstinstallation
-
-1. **Image veröffentlichen**: nach `main` pushen und im Tab *Actions* abwarten, bis „Build and publish image“ grün ist (beim ersten Mal ein paar Minuten).
-2. **Zugangstoken (einmalig)**: GitHub → Settings → Developer settings → Personal access tokens (classic) mit der Berechtigung **`read:packages`**.
-   Auf dem Server: `echo <TOKEN> | docker login ghcr.io -u teamoWeekend --password-stdin`.
-3. **Dateien auf den Server**: `docker-compose.server.yml` und `.env.example` in einen Ordner kopieren (z. B. mit `scp`). Dort `cp .env.example .env` und anpassen:
-   `POSTGRES_PASSWORD` (Pflicht, sonst startet nichts), `TLS_HOSTS=server.example.lan,<IP des Servers>` (HTTPS-Zertifikat für die Handy-Kamera), optional `API_TOKEN`.
-4. **Starten**: `docker compose -f docker-compose.server.yml up -d`. Nennst du die Datei auf dem Server `docker-compose.yml`, entfällt das `-f …`.
-5. **Prüfen**: `http://server.example.lan:8080` und `https://server.example.lan:8443` (Zertifikatswarnung einmal pro Gerät bestätigen). Einstellungen → System zeigt Datenmengen und Adressen.
+1. **Ordner anlegen und Compose-Datei holen**:
+   ```sh
+   mkdir -p ~/beepstock && cd ~/beepstock
+   curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/teamoWeekend/BeepStock/main/docker-compose.yml
+   ```
+   (Bei einem privaten Repository stattdessen die Datei per `scp` vom PC kopieren oder das Repository klonen.)
+2. **`.env` anlegen**:
+   ```sh
+   cat > .env <<EOF
+   COMPOSE_PROJECT_NAME=beepstock
+   POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '=+/')
+   TLS_HOSTS=server.example.lan,192.168.1.10
+   API_TOKEN=
+   BEEPSTOCK_SOURCE=https://github.com/teamoWeekend/BeepStock.git#main
+   EOF
+   chmod 600 .env
+   ```
+   `TLS_HOSTS`: Name und IP des Servers (HTTPS-Zertifikat für die Handy-Kamera). `API_TOKEN` leer lassen oder ein langes Geheimnis setzen.
+   Ist das Repository **privat**, setze `BEEPSTOCK_SOURCE=https://<Token>@github.com/teamoWeekend/BeepStock.git#main` mit einem feingranularen Token
+   (nur dieses Repository, Berechtigung „Contents: Read-only“) und halte die `.env` privat.
+3. **Starten**: `docker compose up -d --build` (beim ersten Mal baut Docker das Image, das dauert 1 bis 2 Minuten).
+4. **Prüfen**: `docker compose ps` (beide Dienste „healthy“), `http://<server>:8080` und `https://<server>:8443` (Zertifikatswarnung einmal pro Gerät bestätigen).
 
 ### Daten von der alten Installation mitnehmen
 
@@ -176,41 +188,36 @@ docker compose cp db:/tmp/beepstock.sql ./beepstock.sql
 docker compose exec -T db rm /tmp/beepstock.sql
 ```
 
-Die Datei auf den Server kopieren und dort einspielen, **bevor die App zum ersten Mal startet** (also statt Schritt 4):
+Die Datei auf den Server kopieren und dort einspielen, **bevor die App zum ersten Mal startet** (also statt Schritt 3):
 
 ```sh
-docker compose -f docker-compose.server.yml up -d db
-docker compose -f docker-compose.server.yml cp beepstock.sql db:/tmp/restore.sql
-docker compose -f docker-compose.server.yml exec -T db psql -U pantry -d pantry -v ON_ERROR_STOP=1 -q -f /tmp/restore.sql
-docker compose -f docker-compose.server.yml exec -T db rm /tmp/restore.sql
-docker compose -f docker-compose.server.yml up -d
+docker compose up -d db
+docker compose cp beepstock.sql db:/tmp/restore.sql
+docker compose exec -T db psql -U pantry -d pantry -v ON_ERROR_STOP=1 -q -f /tmp/restore.sql
+docker compose exec -T db rm /tmp/restore.sql
+docker compose up -d --build
 ```
 
-Der Dump enthält alles inklusive Verlauf. Produktbilder und das HTTPS-Zertifikat werden auf dem Server automatisch neu erzeugt. Alternativ geht die
-JSON-Datensicherung unter Einstellungen → Wartung (mit Vorschau, siehe oben), sie enthält aber keinen Verlauf. Danach die Geräte umstellen:
-ESP32-Bridge im Portal (BOOT 2 s halten oder `http://<Geräte-IP>/`) auf `http://server.example.lan:8080/api/scan` und „Verbindung testen“ (löst der Router `.lan`
-nicht auf, die IP verwenden); Handys und Tablets: neue Adresse, Kamera über `https://`; bei gesetztem `API_TOKEN` den Token im ESP32-Portal und einmalig im
-Browser eintragen. Zum Schluss die alte Installation mit `docker compose down` stoppen (die Volumes bleiben, erst löschen, wenn alles läuft).
+Der Dump enthält alles inklusive Verlauf, Produktbilder und das HTTPS-Zertifikat werden neu erzeugt. Alternativ geht die JSON-Datensicherung unter
+Einstellungen → Wartung (mit Vorschau, siehe oben), sie enthält keinen Verlauf. Danach die Geräte umstellen: ESP32-Bridge im Portal (BOOT 2 s halten
+oder `http://<Geräte-IP>/`) auf `http://<server>:8080/api/scan` und „Verbindung testen“ (löst der Router den Namen nicht auf, die IP verwenden);
+Handys und Tablets: neue Adresse, Kamera über `https://`; bei gesetztem `API_TOKEN` den Token im ESP32-Portal und einmalig im Browser eintragen.
+Zum Schluss die alte Installation mit `docker compose down` stoppen (die Volumes bleiben, erst löschen, wenn alles läuft).
 
 ### Betrieb
 
-* **Update**: `docker compose -f docker-compose.server.yml pull && docker compose -f docker-compose.server.yml up -d`. Eine feste Version pinnt
-  `BEEPSTOCK_IMAGE=ghcr.io/teamoweekend/beepstock:<tag>` in der `.env` (Tags: `latest`, `sha-<kurz>`, bei Git-Tags wie `v1.2.3` die Version).
-* **Logs**: `docker compose -f docker-compose.server.yml logs -f app` (Rotation auf 3 × 10 MB begrenzt). Nach einem Neustart des Servers starten die Container
-  von selbst (`restart: unless-stopped`, der Docker-Dienst muss beim Boot laufen).
+* **Update**: `docker compose up -d --build`. Docker holt dabei den neuesten Stand des Branchs aus `BEEPSTOCK_SOURCE` und baut neu, die Daten bleiben erhalten.
+  Eine bestimmte Version baust du mit `#<tag>` oder `#<commit>` statt `#main`.
+* **Logs**: `docker compose logs -f app` (Rotation auf 3 × 10 MB begrenzt). Nach einem Neustart des Servers starten die Container von selbst
+  (`restart: unless-stopped`, der Docker-Dienst muss beim Boot laufen).
 * **Backup** (auf dem Server, z. B. per Cron, hier jede Nacht um 03:30; die Dumps der letzten 14 Tage bleiben):
   ```sh
-  30 3 * * *  cd /home/benutzer/beepstock && docker compose -f docker-compose.server.yml exec -T db pg_dump -U pantry --clean --if-exists --no-owner pantry | gzip > /home/benutzer/backups/beepstock-$(date +\%F).sql.gz && find /home/benutzer/backups -name 'beepstock-*.sql.gz' -mtime +14 -delete
+  30 3 * * *  cd /home/benutzer/beepstock && docker compose exec -T db pg_dump -U pantry --clean --if-exists --no-owner pantry | gzip > /home/benutzer/backups/beepstock-$(date +\%F).sql.gz && find /home/benutzer/backups -name 'beepstock-*.sql.gz' -mtime +14 -delete
   ```
-  Wiederherstellen: `gunzip -c beepstock-<Datum>.sql.gz | docker compose -f docker-compose.server.yml exec -T db psql -U pantry -d pantry -v ON_ERROR_STOP=1 -q`.
-* **Von deinem PC aus steuern** (optional, ebenfalls nur Docker): `docker context create myserver --docker "host=ssh://benutzer@server.example.lan"`, danach
-  `docker --context myserver compose -f docker-compose.server.yml --env-file .env.server up -d`. Das braucht SSH-Anmeldung per Schlüssel (Docker kann kein Passwort eintippen)
-  und dass der Benutzer Docker nutzen darf.
-
-### Lokale Entwicklung und Bauen aus dem Quellcode
-
-`docker-compose.yml` baut das Image aus dem Quellcode (`docker compose up -d --build`), `docker-compose.server.yml` zieht das fertige. Beide haben dieselben Volumes
-und Einstellungen. Ein selbst gebautes Image läuft auch auf einem Server: `docker compose up -d --build` im Projektordner dort (Quellcode per `git clone` mit Deploy-Key).
+  Wiederherstellen: `gunzip -c beepstock-<Datum>.sql.gz | docker compose exec -T db psql -U pantry -d pantry -v ON_ERROR_STOP=1 -q`.
+* **Von deinem PC aus steuern** (optional): per SSH auf dem Server arbeiten (`ssh benutzer@server.example.lan`, dann die Befehle dort). Ein Docker-Kontext
+  (`docker context create …`) funktioniert mit einer Git-Adresse als `BEEPSTOCK_SOURCE` **nicht unter Windows**: Docker Compose 5.1 behandelt die Adresse dort als Dateipfad
+  und bricht mit „CreateFile … syntax is incorrect“ ab. Auf Linux und macOS gibt es das Problem nicht, und ein direkter `docker buildx build <Git-Adresse>` geht auch unter Windows.
 
 ## Konfiguration (Umgebungsvariablen)
 
