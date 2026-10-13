@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { MODES, type Mode } from './control.js';
-import { q } from './db.js';
+import { db } from './db.js';
+import { settings } from './schema.js';
 
 /**
  * Settings that can be changed in the UI. Stored in the `settings` table; the environment variables
@@ -96,7 +97,7 @@ export async function getSettings(): Promise<AppSettings> {
   if (cache && Date.now() - cache.at < 3000) return cache.value;
   const value = defaultSettings();
   try {
-    const rows = await q<{ key: string; value: unknown }>('SELECT key, value FROM settings');
+    const rows = await db.select().from(settings);
     for (const r of rows) {
       if (r.key in value) {
         try {
@@ -121,7 +122,7 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<Ap
     entries.push([k, clean(k as keyof AppSettings, v)]);
   }
   for (const [k, v] of entries) {
-    await q(`INSERT INTO settings (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = $2::jsonb`, [k, JSON.stringify(v)]);
+    await db.insert(settings).values({ key: k, value: v }).onConflictDoUpdate({ target: settings.key, set: { value: v } });
   }
   cache = null;
   return getSettings();

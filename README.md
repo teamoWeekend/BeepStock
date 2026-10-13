@@ -11,7 +11,7 @@
 Produktdaten und Nährwerte kommen von [Open Food Facts](https://world.openfoodfacts.org) und seinen Schwesterdatenbanken. Daraus entstehen Vorrat,
 Einkaufsliste, Anbruch-Verwaltung, Inventur und eine Auswertung, wie viel du aufbrauchst und wie viel du wegwirfst.
 
-Node.js + TypeScript (Fastify), PostgreSQL, Web-UI ohne Build-Schritt, Betrieb per Docker. Lizenz: [MIT](LICENSE).
+Node.js + TypeScript (Fastify), PostgreSQL über Drizzle ORM, Web-UI ohne Build-Schritt, Betrieb per Docker. Lizenz: [MIT](LICENSE).
 
 ## Start
 
@@ -227,6 +227,16 @@ Zum Schluss die alte Installation mit `docker compose down` stoppen (die Volumes
 
 `DATABASE_URL`, `PORT` (8080), `IMAGE_DIR` (Bilder-Cache), `BACKUP_DIR` (automatische Sicherungen vor Importen), `API_TOKEN` (leer = offen), `MODE_IDLE_MINUTES` + `DEFAULT_MODE` (nach Leerlauf zurück
 in einen Standardmodus, z. B. `consume`), `PENDING_MINUTES` (10, danach verfällt ein gesetztes MHD), `OFF_BASE_URL`, `OFF_USER_AGENT`.
+
+## Datenbank (Drizzle ORM)
+
+Die Tabellen sind in [`src/schema.ts`](src/schema.ts) abgebildet, alle Abfragen laufen über [Drizzle ORM](https://orm.drizzle.team).
+PostgreSQL-Funktionen ohne Drizzle-Gegenstück (z. B. `COALESCE`, `FILTER`, das Ablaufdatum einer Packung) stehen gesammelt in
+[`src/expressions.ts`](src/expressions.ts).
+
+Schema ändern: `src/schema.ts` anpassen, dann `npm run db:generate`. Das schreibt die passende Migration nach `drizzle/`, die beim
+nächsten Start automatisch angewendet wird. Beide zusammen committen; die CI schlägt fehl, wenn eine Schemaänderung ohne Migration
+kommt. Datenbanken aus der Zeit vor Drizzle (Tabelle `schema_version`) werden beim ersten Start ohne Änderung übernommen.
 
 ## Tests
 

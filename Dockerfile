@@ -14,6 +14,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY public ./public
+COPY drizzle ./drizzle
 RUN mkdir -p /data/certs /data/images /data/backups && chown -R node:node /data
 USER node
 EXPOSE 8080 8443

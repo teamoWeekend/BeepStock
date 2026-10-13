@@ -7,8 +7,9 @@ data/
 .DS_Store
 Thumbs.db
 
-# dumps and backups
+# dumps and backups (the migrations in drizzle/ are part of the code)
 *.sql
+!drizzle/*.sql
 backups/
 
 # per-environment env files hold passwords (only the example is committed)

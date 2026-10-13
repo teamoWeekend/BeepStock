@@ -5,28 +5,38 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fs from 'node:fs';
 import fastifyWebsocket from '@fastify/websocket';
+import { and, asc, count, desc, eq, getTableColumns, gt, ilike, inArray, isNotNull, isNull, lt, lte, min, ne, or } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import { config } from './config.js';
 import { controlSheet, MODES, type Mode } from './control.js';
-import { migrate, pool, q, q1 } from './db.js';
+import { addDays, today } from './dates.js';
+import { db, migrate, ping, pool, SchemaError } from './db.js';
+import { always, coalesce, countWhere, dateOf, distinctValues, expiresAt, joinedText, monthOf } from './expressions.js';
 import { addScope, finishSession, openSession, removeScope, resolveAll, resolveRow, rows as inventoryRows, setCounted, startSession } from './inventory.js';
 import { BackupError, buildExport, importBackup, listSafetyBackups, safetyBackupPath } from './backup.js';
 import { clearImageFiles, contentTypeOf, FILE_RE, hasImageFile, imageFilePath, imageStats } from './images.js';
+import { locations, products, shoppingItems, stockItems, stores } from './schema.js';
 import { defaultSettings, getSettings, SOURCE_IDS, SOURCE_TITLES, updateSettings } from './settings.js';
 import { guessKindFromName, KINDS, type Kind } from './storage.js';
 import { loadOrCreateTls } from './tls.js';
 import {
+  addStock,
   addToShopping,
   applyDerivedDefaults,
   backfillClassification,
   backfillImages,
   bus,
+  getLocation,
   getProduct,
   getState,
   handleScan,
   listLocations,
+  logEvent,
+  nextStoreSort,
   productLabel,
   relocateOnOpen,
   resolveProduct,
+  restockCheck,
   setLocation,
   setMode,
   undoLast,
@@ -119,13 +129,34 @@ const dateStr = (v: unknown, field: string): string | null => {
   return v;
 };
 const body = (req: FastifyRequest): Record<string, any> => (req.body && typeof req.body === 'object' ? (req.body as Record<string, any>) : {});
+const daysAgo = (days: number) => new Date(Date.now() - days * 86400000);
 
-const STOCK_SELECT = `
-  SELECT s.id, s.barcode, s.best_before, s.opened_at, s.added_at, s.status, s.finished_at, s.waste_reason,
-         LEAST(s.best_before, (s.opened_at::date + p.days_after_opening)) AS expires,
-         s.location_id, l.name AS location_name,
-         p.name, p.brand, p.quantity_text, p.image_url, p.nutriscore, p.min_stock, p.days_after_opening
-  FROM stock_items s JOIN products p USING (barcode) LEFT JOIN locations l ON l.id = s.location_id`;
+/** Packs with their product and storage location, as the stock list and the history show them. */
+const selectStock = () =>
+  db
+    .select({
+      id: stockItems.id,
+      barcode: stockItems.barcode,
+      best_before: stockItems.best_before,
+      opened_at: stockItems.opened_at,
+      added_at: stockItems.added_at,
+      status: stockItems.status,
+      finished_at: stockItems.finished_at,
+      waste_reason: stockItems.waste_reason,
+      expires: expiresAt(),
+      location_id: stockItems.location_id,
+      location_name: locations.name,
+      name: products.name,
+      brand: products.brand,
+      quantity_text: products.quantity_text,
+      image_url: products.image_url,
+      nutriscore: products.nutriscore,
+      min_stock: products.min_stock,
+      days_after_opening: products.days_after_opening,
+    })
+    .from(stockItems)
+    .innerJoin(products, eq(products.barcode, stockItems.barcode))
+    .leftJoin(locations, eq(locations.id, stockItems.location_id));
 
 // ---------------------------------------------------------------- scanning
 
@@ -156,15 +187,18 @@ app.get('/api/locations', async () => ({ locations: await listLocations() }));
 
 app.post('/api/state/location', async (req) => {
   const id = body(req).location_id;
-  if (id !== null && !(await q1('SELECT id FROM locations WHERE id = $1', [int(id, 1, 2147483647, 'location_id')]))) throw new HttpError(404, 'Lagerort unbekannt');
+  if (id !== null && !(await getLocation(int(id, 1, 2147483647, 'location_id')))) throw new HttpError(404, 'Lagerort unbekannt');
   return { state: await setLocation(id) };
 });
+
+const locationFields = { id: locations.id, name: locations.name, kind: locations.kind };
 
 app.post('/api/locations', async (req) => {
   const name = str(body(req).name, 'name', 60);
   const kind: Kind = KINDS.includes(body(req).kind) ? body(req).kind : guessKindFromName(name);
   try {
-    return await q1('INSERT INTO locations (name, kind) VALUES ($1, $2) RETURNING id, name, kind', [name, kind]);
+    const [row] = await db.insert(locations).values({ name, kind }).returning(locationFields);
+    return row;
   } catch {
     throw new HttpError(409, 'Lagerort existiert bereits');
   }
@@ -175,10 +209,12 @@ app.patch('/api/locations/:id', async (req) => {
   try {
     const b = body(req);
     if (b.kind !== undefined && !KINDS.includes(b.kind)) throw new HttpError(400, 'kind: fridge, freezer, pantry oder other');
-    const row = await q1(
-      'UPDATE locations SET name = COALESCE($2, name), kind = COALESCE($3, kind) WHERE id = $1 RETURNING id, name, kind',
-      [id, b.name === undefined ? null : str(b.name, 'name', 60), b.kind ?? null],
-    );
+    const set: PgUpdateSetSource<typeof locations> = {};
+    if (b.name !== undefined) set.name = str(b.name, 'name', 60);
+    if (b.kind !== undefined) set.kind = b.kind;
+    const [row] = Object.keys(set).length
+      ? await db.update(locations).set(set).where(eq(locations.id, id)).returning(locationFields)
+      : await db.select(locationFields).from(locations).where(eq(locations.id, id));
     if (!row) throw new HttpError(404, 'Nicht gefunden');
     bus.emit('state', await getState());
     return row;
@@ -189,7 +225,7 @@ app.patch('/api/locations/:id', async (req) => {
 });
 
 app.delete('/api/locations/:id', async (req) => {
-  await q('DELETE FROM locations WHERE id = $1', [int((req.params as any).id, 1, 2147483647, 'id')]);
+  await db.delete(locations).where(eq(locations.id, int((req.params as any).id, 1, 2147483647, 'id')));
   bus.emit('state', await getState());
   bus.emit('change', { what: 'stock' });
   return { ok: true };
@@ -198,7 +234,9 @@ app.delete('/api/locations/:id', async (req) => {
 // ---------------------------------------------------------------- stock
 
 app.get('/api/stock', async () => {
-  const items = await q(`${STOCK_SELECT} WHERE s.status = 'in_stock' ORDER BY p.name, COALESCE(LEAST(s.best_before, (s.opened_at::date + p.days_after_opening)), 'infinity'::date)`);
+  const items = await selectStock()
+    .where(eq(stockItems.status, 'in_stock'))
+    .orderBy(asc(products.name), isNull(expiresAt()), asc(expiresAt()), asc(stockItems.id));
   return { items };
 });
 
@@ -209,33 +247,20 @@ app.post('/api/stock', async (req) => {
   const bb = dateStr(b.best_before ?? null, 'best_before');
   const { product } = await resolveProduct(barcode);
   const loc = b.location_id == null ? (await getState()).location_id : int(b.location_id, 1, 2147483647, 'location_id');
-  const rows = await q(`INSERT INTO stock_items (barcode, best_before, location_id) SELECT $1, $2::date, $4 FROM generate_series(1,$3) RETURNING id`, [
-    product.barcode,
-    bb,
-    qty,
-    loc,
-  ]);
+  const ids = await addStock(product.barcode, qty, bb, loc);
   bus.emit('change', { what: 'stock' });
-  return { added: rows.length };
+  return { added: ids.length };
 });
 
 app.patch('/api/stock/:id', async (req) => {
   const id = int((req.params as any).id, 1, Number.MAX_SAFE_INTEGER, 'id');
   const b = body(req);
-  const sets: string[] = [];
-  const vals: unknown[] = [];
-  if ('best_before' in b) {
-    vals.push(dateStr(b.best_before, 'best_before'));
-    sets.push(`best_before = $${vals.length}`);
-  }
-  if ('location_id' in b) {
-    vals.push(b.location_id === null ? null : int(b.location_id, 1, 2147483647, 'location_id'));
-    sets.push(`location_id = $${vals.length}`);
-  }
-  if ('opened' in b) sets.push(b.opened ? 'opened_at = COALESCE(opened_at, now())' : 'opened_at = NULL');
-  if (!sets.length) throw new HttpError(400, 'Nichts zu ändern');
-  vals.push(id);
-  const row = await q1(`UPDATE stock_items SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING id`, vals);
+  const set: PgUpdateSetSource<typeof stockItems> = {};
+  if ('best_before' in b) set.best_before = dateStr(b.best_before, 'best_before');
+  if ('location_id' in b) set.location_id = b.location_id === null ? null : int(b.location_id, 1, 2147483647, 'location_id');
+  if ('opened' in b) set.opened_at = b.opened ? coalesce<Date>(stockItems.opened_at, new Date()) : null; // keeps an earlier opening date
+  if (!Object.keys(set).length) throw new HttpError(400, 'Nichts zu ändern');
+  const [row] = await db.update(stockItems).set(set).where(eq(stockItems.id, id)).returning({ id: stockItems.id });
   if (!row) throw new HttpError(404, 'Nicht gefunden');
   bus.emit('change', { what: 'stock' });
   return { ok: true };
@@ -245,22 +270,28 @@ app.post('/api/stock/:id/:action', async (req) => {
   const { id: rawId, action } = req.params as { id: string; action: string };
   const id = int(rawId, 1, Number.MAX_SAFE_INTEGER, 'id');
   if (action === 'consume' || action === 'waste') {
-    const row = await q1<{ barcode: string }>(
-      `UPDATE stock_items SET status = $2, finished_at = now(), waste_reason = $3 WHERE id = $1 AND status = 'in_stock' RETURNING barcode`,
-      [id, action === 'consume' ? 'consumed' : 'wasted', typeof body(req).reason === 'string' ? body(req).reason.slice(0, 200) : null],
-    );
+    const reason = typeof body(req).reason === 'string' ? body(req).reason.slice(0, 200) : null;
+    const [row] = await db
+      .update(stockItems)
+      .set({ status: action === 'consume' ? 'consumed' : 'wasted', finished_at: new Date(), waste_reason: reason })
+      .where(and(eq(stockItems.id, id), eq(stockItems.status, 'in_stock')))
+      .returning({ barcode: stockItems.barcode });
     if (!row) throw new HttpError(404, 'Nicht im Vorrat');
-    await q('INSERT INTO events (kind, barcode, item_ids) VALUES ($1,$2,$3)', [action, row.barcode, [id]]);
+    await logEvent(action, row.barcode, [id]);
     if (action === 'consume' || (await getSettings()).restock_on_waste) await restock(row.barcode);
   } else if (action === 'open') {
-    const row = await q1<{ barcode: string }>(`UPDATE stock_items SET opened_at = now() WHERE id = $1 AND status = 'in_stock' RETURNING barcode`, [id]);
+    const [row] = await db
+      .update(stockItems)
+      .set({ opened_at: new Date() })
+      .where(and(eq(stockItems.id, id), eq(stockItems.status, 'in_stock')))
+      .returning({ barcode: stockItems.barcode });
     if (!row) throw new HttpError(404, 'Nicht im Vorrat');
     const moved = await relocateOnOpen([id]); // pantry -> fridge
-    await q('INSERT INTO events (kind, barcode, item_ids, detail) VALUES ($1,$2,$3,$4)', ['open', row.barcode, [id], JSON.stringify({ moved: moved.moved })]);
+    await logEvent('open', row.barcode, [id], { moved: moved.moved });
     bus.emit('change', { what: 'stock' });
     return { ok: true, moved_to: moved.to };
   } else if (action === 'delete') {
-    await q('DELETE FROM stock_items WHERE id = $1', [id]);
+    await db.delete(stockItems).where(eq(stockItems.id, id));
   } else {
     throw new HttpError(404, 'Unbekannte Aktion');
   }
@@ -270,35 +301,35 @@ app.post('/api/stock/:id/:action', async (req) => {
 
 async function restock(barcode: string): Promise<void> {
   const p = await getProduct(barcode);
-  if (!p || p.min_stock <= 0) return;
-  const have = (await q1<{ n: number }>(`SELECT count(*)::int AS n FROM stock_items WHERE barcode=$1 AND status='in_stock'`, [barcode]))?.n ?? 0;
-  const open = await q1('SELECT id FROM shopping_items WHERE barcode=$1 AND NOT done', [barcode]);
-  if (have < p.min_stock && !open) await addToShopping(p, productLabel(p), p.min_stock - have, 'auto');
+  if (p) await restockCheck(p);
 }
 
 app.get('/api/history', async (req) => {
   const { status, limit } = req.query as Record<string, string>;
   const st = status === 'consumed' || status === 'wasted' ? status : null;
   const lim = Math.min(Math.max(parseInt(limit ?? '200', 10) || 200, 1), 1000);
-  const items = await q(
-    `${STOCK_SELECT} WHERE s.status = ${st ? '$1' : `ANY(ARRAY['consumed','wasted'])`} ORDER BY s.finished_at DESC LIMIT ${lim}`,
-    st ? [st] : [],
-  );
+  const items = await selectStock()
+    .where(st ? eq(stockItems.status, st) : inArray(stockItems.status, ['consumed', 'wasted']))
+    .orderBy(desc(stockItems.finished_at), desc(stockItems.id))
+    .limit(lim);
   return { items };
 });
 
 app.get('/api/stats', async () => {
-  const rows = await q<{ status: string; n: number }>(
-    `SELECT status, count(*)::int AS n FROM stock_items WHERE finished_at > now() - interval '30 days' AND status <> 'in_stock' GROUP BY status`,
-  );
+  const rows = await db
+    .select({ status: stockItems.status, n: count() })
+    .from(stockItems)
+    .where(and(gt(stockItems.finished_at, daysAgo(30)), ne(stockItems.status, 'in_stock')))
+    .groupBy(stockItems.status);
   const get = (s: string) => rows.find((r) => r.status === s)?.n ?? 0;
-  const inStock = (await q1<{ n: number }>(`SELECT count(*)::int AS n FROM stock_items WHERE status='in_stock'`))?.n ?? 0;
-  const expiring = (await q1<{ n: number }>(
-    `SELECT count(*)::int AS n FROM stock_items s JOIN products p USING (barcode)
-     WHERE s.status='in_stock' AND LEAST(s.best_before, (s.opened_at::date + p.days_after_opening)) <= current_date + $1::int`,
-    [(await getSettings()).expiring_days],
-  ))?.n ?? 0;
-  return { in_stock: inStock, expiring_soon: expiring, consumed_30d: get('consumed'), wasted_30d: get('wasted') };
+  const inStock = await db.$count(stockItems, eq(stockItems.status, 'in_stock'));
+  const lastDay = today(addDays(new Date(), (await getSettings()).expiring_days));
+  const [expiring] = await db
+    .select({ n: count() })
+    .from(stockItems)
+    .innerJoin(products, eq(products.barcode, stockItems.barcode))
+    .where(and(eq(stockItems.status, 'in_stock'), lte(expiresAt(), lastDay)));
+  return { in_stock: inStock, expiring_soon: expiring?.n ?? 0, consumed_30d: get('consumed'), wasted_30d: get('wasted') };
 });
 
 // ---------------------------------------------------------------- products
@@ -310,26 +341,40 @@ app.get('/api/products', async (req) => {
   const words = String(query?.q ?? '').trim().split(/\s+/).filter(Boolean).slice(0, 8);
   const limit = Math.min(500, Math.max(1, parseInt(String(query?.limit ?? '500'), 10) || 500));
   const stockFirst = query?.stock_first === '1'; // quick search: what is in the pantry before the rest
-  const like = (w: string) => `%${w.replace(/[\\%_]/g, '\\$&')}%`;
-  const params: unknown[] = words.map(like);
-  const where = words.map((_, i) => `concat_ws(' ', p.name, p.brand, p.barcode) ILIKE $${i + 1}`).join(' AND ') || 'TRUE';
-  params.push(words.join(' '), words[0] ? `${words[0].replace(/[\\%_]/g, '\\$&')}%` : '');
-  const full = `$${params.length - 1}`, prefix = `$${params.length}`;
-  const rows = await q(
-    `SELECT p.*, st.name AS store_name, s.in_stock, s.opened, s.next_expiry, s.location_names
-     FROM products p LEFT JOIN stores st ON st.id = p.store_id
-     LEFT JOIN LATERAL (
-       SELECT count(*)::int AS in_stock, count(si.opened_at)::int AS opened,
-              min(LEAST(si.best_before, si.opened_at::date + p.days_after_opening)) AS next_expiry,
-              array_remove(array_agg(DISTINCT l.name), NULL) AS location_names
-       FROM stock_items si LEFT JOIN locations l ON l.id = si.location_id
-       WHERE si.barcode = p.barcode AND si.status = 'in_stock'
-     ) s ON TRUE
-     WHERE ${where}
-     ORDER BY (p.barcode = ${full}) DESC, ${stockFirst ? 's.in_stock > 0 DESC, ' : ''}(p.name ILIKE ${prefix}) DESC, p.name
-     LIMIT ${limit}`,
-    params,
-  );
+  const escape = (w: string) => w.replace(/[\\%_]/g, '\\$&'); // LIKE wildcards are searched as text
+  // the product's packs in stock (lateral: evaluated per product)
+  const stock = db
+    .select({
+      in_stock: count().as('in_stock'),
+      opened: count(stockItems.opened_at).as('opened'),
+      next_expiry: min(expiresAt()).as('next_expiry'),
+      location_names: distinctValues<string>(locations.name).as('location_names'),
+    })
+    .from(stockItems)
+    .leftJoin(locations, eq(locations.id, stockItems.location_id))
+    .where(and(eq(stockItems.barcode, products.barcode), eq(stockItems.status, 'in_stock')))
+    .as('s');
+  const rows = await db
+    .select({
+      ...getTableColumns(products),
+      store_name: stores.name,
+      in_stock: stock.in_stock,
+      opened: stock.opened,
+      next_expiry: stock.next_expiry,
+      location_names: stock.location_names,
+    })
+    .from(products)
+    .leftJoin(stores, eq(stores.id, products.store_id))
+    .leftJoinLateral(stock, always)
+    .where(and(...words.map((w) => ilike(joinedText(products.name, products.brand, products.barcode), `%${escape(w)}%`))))
+    .orderBy(
+      desc(eq(products.barcode, words.join(' '))),
+      ...(stockFirst ? [desc(gt(stock.in_stock, 0))] : []),
+      desc(ilike(products.name, words[0] ? `${escape(words[0])}%` : '')),
+      asc(products.name),
+      asc(products.barcode),
+    )
+    .limit(limit);
   return { products: rows };
 });
 
@@ -342,35 +387,27 @@ app.get('/api/products/:barcode', async (req) => {
 app.patch('/api/products/:barcode', async (req) => {
   const barcode = (req.params as any).barcode as string;
   const b = body(req);
-  const sets: string[] = [];
-  const vals: unknown[] = [];
-  const add = (col: string, v: unknown) => {
-    vals.push(v);
-    sets.push(`${col} = $${vals.length}`);
-  };
-  if ('name' in b) add('name', str(b.name, 'name'));
-  if ('brand' in b) add('brand', b.brand ? str(b.brand, 'brand') : null);
-  if ('shelf_life_days' in b) add('shelf_life_days', nullableInt(b.shelf_life_days, 1, 36500, 'shelf_life_days'));
-  if ('days_after_opening' in b) add('days_after_opening', nullableInt(b.days_after_opening, 1, 3650, 'days_after_opening'));
-  if ('min_stock' in b) add('min_stock', int(b.min_stock, 0, 99, 'min_stock'));
-  if ('store_id' in b) add('store_id', await storeIdOrNull(b.store_id));
+  const set: PgUpdateSetSource<typeof products> = {};
+  if ('name' in b) set.name = str(b.name, 'name');
+  if ('brand' in b) set.brand = b.brand ? str(b.brand, 'brand') : null;
+  if ('shelf_life_days' in b) set.shelf_life_days = nullableInt(b.shelf_life_days, 1, 36500, 'shelf_life_days');
+  if ('days_after_opening' in b) set.days_after_opening = nullableInt(b.days_after_opening, 1, 3650, 'days_after_opening');
+  if ('min_stock' in b) set.min_stock = int(b.min_stock, 0, 99, 'min_stock');
+  if ('store_id' in b) set.store_id = await storeIdOrNull(b.store_id);
   // a hand-set default location / move-on-open switches the automatic derivation off for this product
   if ('location_id' in b) {
     const lid = b.location_id === null || b.location_id === '' ? null : int(b.location_id, 1, 2147483647, 'location_id');
-    if (lid !== null && !(await q1('SELECT id FROM locations WHERE id = $1', [lid]))) throw new HttpError(404, 'Lagerort unbekannt');
-    add('location_id', lid);
-    sets.push('auto_defaults = false');
+    if (lid !== null && !(await getLocation(lid))) throw new HttpError(404, 'Lagerort unbekannt');
+    set.location_id = lid;
+    set.auto_defaults = false;
   }
   if ('move_on_open' in b) {
-    add('move_on_open', !!b.move_on_open);
-    if (!sets.includes('auto_defaults = false')) sets.push('auto_defaults = false');
+    set.move_on_open = !!b.move_on_open;
+    set.auto_defaults = false;
   }
-  if (b.reset_auto === true) {
-    sets.push('auto_defaults = true');
-  }
-  if (!sets.length) throw new HttpError(400, 'Nichts zu ändern');
-  vals.push(barcode);
-  let row = await q1<any>(`UPDATE products SET ${sets.join(', ')} WHERE barcode = $${vals.length} RETURNING *`, vals);
+  if (b.reset_auto === true) set.auto_defaults = true;
+  if (!Object.keys(set).length) throw new HttpError(400, 'Nichts zu ändern');
+  let [row] = await db.update(products).set(set).where(eq(products.barcode, barcode)).returning();
   if (!row) throw new HttpError(404, 'Produkt unbekannt');
   if (b.reset_auto === true) row = await applyDerivedDefaults(row); // back to the automatic suggestion
   bus.emit('change', { what: 'products' });
@@ -388,16 +425,18 @@ app.post('/api/products/:barcode/refresh', async (req) => {
 async function storeIdOrNull(v: unknown): Promise<number | null> {
   if (v === null || v === '' || v === undefined) return null;
   const id = int(v, 1, 2147483647, 'store_id');
-  if (!(await q1('SELECT id FROM stores WHERE id = $1', [id]))) throw new HttpError(404, 'Laden unbekannt');
+  if (!(await db.$count(stores, eq(stores.id, id)))) throw new HttpError(404, 'Laden unbekannt');
   return id;
 }
 
-app.get('/api/stores', async () => ({ stores: await q('SELECT id, name, sort FROM stores ORDER BY sort, name') }));
+const storeFields = { id: stores.id, name: stores.name, sort: stores.sort };
+
+app.get('/api/stores', async () => ({ stores: await db.select(storeFields).from(stores).orderBy(stores.sort, stores.name) }));
 
 app.post('/api/stores', async (req) => {
   const name = str(body(req).name, 'name', 60);
   try {
-    const row = await q1('INSERT INTO stores (name, sort) VALUES ($1, COALESCE((SELECT max(sort) + 1 FROM stores), 1)) RETURNING id, name, sort', [name]);
+    const [row] = await db.insert(stores).values({ name, sort: await nextStoreSort() }).returning(storeFields);
     bus.emit('change', { what: 'shopping' });
     return row;
   } catch {
@@ -409,18 +448,21 @@ app.patch('/api/stores/:id', async (req) => {
   const id = int((req.params as any).id, 1, 2147483647, 'id');
   const b = body(req);
   if (b.move === 'up' || b.move === 'down') {
-    const list = await q<{ id: number }>('SELECT id FROM stores ORDER BY sort, name');
+    const list = await db.select({ id: stores.id }).from(stores).orderBy(stores.sort, stores.name);
     const i = list.findIndex((r) => r.id === id);
     const j = b.move === 'up' ? i - 1 : i + 1;
     if (i < 0) throw new HttpError(404, 'Nicht gefunden');
     if (j >= 0 && j < list.length) {
       const order = list.map((r) => r.id);
       [order[i], order[j]] = [order[j]!, order[i]!];
-      await q('UPDATE stores SET sort = x.ord FROM (SELECT id, ord FROM unnest($1::int[]) WITH ORDINALITY AS t(id, ord)) x WHERE stores.id = x.id', [order]);
+      await db.transaction(async (tx) => {
+        for (const [i, storeId] of order.entries()) await tx.update(stores).set({ sort: i + 1 }).where(eq(stores.id, storeId));
+      });
     }
   } else {
     try {
-      if (!(await q1('UPDATE stores SET name = $2 WHERE id = $1 RETURNING id', [id, str(b.name, 'name', 60)]))) throw new HttpError(404, 'Nicht gefunden');
+      const [row] = await db.update(stores).set({ name: str(b.name, 'name', 60) }).where(eq(stores.id, id)).returning({ id: stores.id });
+      if (!row) throw new HttpError(404, 'Nicht gefunden');
     } catch (e) {
       if (e instanceof HttpError) throw e;
       throw new HttpError(409, 'Laden existiert bereits');
@@ -431,7 +473,7 @@ app.patch('/api/stores/:id', async (req) => {
 });
 
 app.delete('/api/stores/:id', async (req) => {
-  await q('DELETE FROM stores WHERE id = $1', [int((req.params as any).id, 1, 2147483647, 'id')]);
+  await db.delete(stores).where(eq(stores.id, int((req.params as any).id, 1, 2147483647, 'id')));
   bus.emit('change', { what: 'shopping' });
   return { ok: true };
 });
@@ -441,48 +483,58 @@ app.delete('/api/stores/:id', async (req) => {
 
 app.get('/api/stats/waste', async (req) => {
   const days = Math.min(Math.max(parseInt(String((req.query as any)?.days ?? '90'), 10) || 90, 1), 3650);
-  const where = `s.status IN ('consumed','wasted') AND s.finished_at > now() - make_interval(days => $1)`;
-  const totalsRows = await q<{ status: string; n: number }>(`SELECT s.status, count(*)::int AS n FROM stock_items s WHERE ${where} GROUP BY s.status`, [days]);
+  const finished = and(inArray(stockItems.status, ['consumed', 'wasted']), gt(stockItems.finished_at, daysAgo(days)));
+  const isWasted = eq(stockItems.status, 'wasted');
+  const consumedN = countWhere(eq(stockItems.status, 'consumed'));
+  const wastedN = countWhere(isWasted);
+  const totalsRows = await db.select({ status: stockItems.status, n: count() }).from(stockItems).where(finished).groupBy(stockItems.status);
   const consumed = totalsRows.find((r) => r.status === 'consumed')?.n ?? 0;
   const wasted = totalsRows.find((r) => r.status === 'wasted')?.n ?? 0;
-  const products = await q(
-    `SELECT p.barcode, p.name, p.brand, p.image_url,
-            count(*) FILTER (WHERE s.status = 'consumed')::int AS consumed,
-            count(*) FILTER (WHERE s.status = 'wasted')::int AS wasted,
-            count(*) FILTER (WHERE s.status = 'wasted' AND s.best_before < s.finished_at::date)::int AS wasted_expired,
-            count(*) FILTER (WHERE s.status = 'wasted' AND s.opened_at IS NOT NULL)::int AS wasted_opened
-     FROM stock_items s JOIN products p USING (barcode) WHERE ${where}
-     GROUP BY p.barcode ORDER BY wasted DESC, consumed DESC, p.name LIMIT 200`,
-    [days],
-  );
-  const months = await q(
-    `SELECT to_char(date_trunc('month', s.finished_at), 'YYYY-MM') AS month,
-            count(*) FILTER (WHERE s.status = 'consumed')::int AS consumed,
-            count(*) FILTER (WHERE s.status = 'wasted')::int AS wasted
-     FROM stock_items s WHERE ${where} GROUP BY 1 ORDER BY 1`,
-    [days],
-  );
-  const locations = await q(
-    `SELECT COALESCE(l.name, 'Ohne Lagerort') AS name,
-            count(*) FILTER (WHERE s.status = 'consumed')::int AS consumed,
-            count(*) FILTER (WHERE s.status = 'wasted')::int AS wasted
-     FROM stock_items s LEFT JOIN locations l ON l.id = s.location_id WHERE ${where} GROUP BY 1 ORDER BY wasted DESC, 1`,
-    [days],
-  );
+  const byProduct = await db
+    .select({
+      barcode: products.barcode,
+      name: products.name,
+      brand: products.brand,
+      image_url: products.image_url,
+      consumed: consumedN,
+      wasted: wastedN,
+      wasted_expired: countWhere(and(isWasted, lt(stockItems.best_before, dateOf(stockItems.finished_at)))),
+      wasted_opened: countWhere(and(isWasted, isNotNull(stockItems.opened_at))),
+    })
+    .from(stockItems)
+    .innerJoin(products, eq(products.barcode, stockItems.barcode))
+    .where(finished)
+    .groupBy(products.barcode)
+    .orderBy(desc(wastedN), desc(consumedN), asc(products.name), asc(products.barcode))
+    .limit(200);
+  const month = monthOf(stockItems.finished_at);
+  const byMonth = await db.select({ month, consumed: consumedN, wasted: wastedN }).from(stockItems).where(finished).groupBy(month).orderBy(month);
+  const locationName = coalesce<string>(locations.name, 'Ohne Lagerort');
+  const byLocation = await db
+    .select({ name: locationName, consumed: consumedN, wasted: wastedN })
+    .from(stockItems)
+    .leftJoin(locations, eq(locations.id, stockItems.location_id))
+    .where(finished)
+    .groupBy(locations.name)
+    .orderBy(desc(wastedN), asc(locationName));
   const total = consumed + wasted;
-  return { days, consumed, wasted, waste_rate: total ? wasted / total : 0, products, months, locations };
+  return { days, consumed, wasted, waste_rate: total ? wasted / total : 0, products: byProduct, months: byMonth, locations: byLocation };
 });
 
 // ---------------------------------------------------------------- shopping list
 
-app.get('/api/shopping', async () => ({
-  items: await q(
-    `SELECT sh.*, p.image_url, COALESCE(sh.store_id, p.store_id) AS eff_store_id, st.name AS store_name
-     FROM shopping_items sh LEFT JOIN products p USING (barcode) LEFT JOIN stores st ON st.id = COALESCE(sh.store_id, p.store_id)
-     WHERE NOT sh.done OR sh.done_at > now() - interval '2 days'
-     ORDER BY sh.done, (st.id IS NULL), st.sort, st.name, sh.name`,
-  ),
-}));
+// open entries and what was ticked off in the last two days, grouped by store (the entry's own, else the product's)
+app.get('/api/shopping', async () => {
+  const effStore = coalesce<number | null>(shoppingItems.store_id, products.store_id);
+  const items = await db
+    .select({ ...getTableColumns(shoppingItems), image_url: products.image_url, eff_store_id: effStore, store_name: stores.name })
+    .from(shoppingItems)
+    .leftJoin(products, eq(products.barcode, shoppingItems.barcode))
+    .leftJoin(stores, eq(stores.id, effStore))
+    .where(or(eq(shoppingItems.done, false), gt(shoppingItems.done_at, daysAgo(2))))
+    .orderBy(asc(shoppingItems.done), isNull(stores.id), asc(stores.sort), asc(stores.name), asc(shoppingItems.name), asc(shoppingItems.id));
+  return { items };
+});
 
 app.post('/api/shopping', async (req) => {
   const b = body(req);
@@ -491,7 +543,7 @@ app.post('/api/shopping', async (req) => {
   if (b.barcode) product = (await resolveProduct(str(b.barcode, 'barcode', 32))).product;
   const name = b.name ? str(b.name, 'name') : product ? productLabel(product) : str(b.name, 'name');
   const r = await addToShopping(product, name, qty, 'manual');
-  if ('store_id' in b) await q('UPDATE shopping_items SET store_id = $2 WHERE id = $1', [r.id, await storeIdOrNull(b.store_id)]);
+  if ('store_id' in b) await db.update(shoppingItems).set({ store_id: await storeIdOrNull(b.store_id) }).where(eq(shoppingItems.id, r.id));
   bus.emit('change', { what: 'shopping' });
   return r;
 });
@@ -499,36 +551,26 @@ app.post('/api/shopping', async (req) => {
 app.patch('/api/shopping/:id', async (req) => {
   const id = int((req.params as any).id, 1, Number.MAX_SAFE_INTEGER, 'id');
   const b = body(req);
-  const sets: string[] = [];
-  const vals: unknown[] = [];
-  if ('done' in b) sets.push(b.done ? 'done = true, done_at = now()' : 'done = false, done_at = NULL');
-  if ('qty' in b) {
-    vals.push(int(b.qty, 1, 99, 'qty'));
-    sets.push(`qty = $${vals.length}`);
-  }
-  if ('name' in b) {
-    vals.push(str(b.name, 'name'));
-    sets.push(`name = $${vals.length}`);
-  }
-  if ('store_id' in b) {
-    vals.push(await storeIdOrNull(b.store_id));
-    sets.push(`store_id = $${vals.length}`);
-  }
-  if (!sets.length) throw new HttpError(400, 'Nichts zu ändern');
-  vals.push(id);
-  if (!(await q1(`UPDATE shopping_items SET ${sets.join(', ')} WHERE id = $${vals.length} RETURNING id`, vals))) throw new HttpError(404, 'Nicht gefunden');
+  const set: PgUpdateSetSource<typeof shoppingItems> = {};
+  if ('done' in b) Object.assign(set, b.done ? { done: true, done_at: new Date() } : { done: false, done_at: null });
+  if ('qty' in b) set.qty = int(b.qty, 1, 99, 'qty');
+  if ('name' in b) set.name = str(b.name, 'name');
+  if ('store_id' in b) set.store_id = await storeIdOrNull(b.store_id);
+  if (!Object.keys(set).length) throw new HttpError(400, 'Nichts zu ändern');
+  const [row] = await db.update(shoppingItems).set(set).where(eq(shoppingItems.id, id)).returning({ id: shoppingItems.id });
+  if (!row) throw new HttpError(404, 'Nicht gefunden');
   bus.emit('change', { what: 'shopping' });
   return { ok: true };
 });
 
 app.delete('/api/shopping/:id', async (req) => {
-  await q('DELETE FROM shopping_items WHERE id = $1', [int((req.params as any).id, 1, Number.MAX_SAFE_INTEGER, 'id')]);
+  await db.delete(shoppingItems).where(eq(shoppingItems.id, int((req.params as any).id, 1, Number.MAX_SAFE_INTEGER, 'id')));
   bus.emit('change', { what: 'shopping' });
   return { ok: true };
 });
 
 app.post('/api/shopping/clear-done', async () => {
-  await q('DELETE FROM shopping_items WHERE done');
+  await db.delete(shoppingItems).where(eq(shoppingItems.done, true));
   bus.emit('change', { what: 'shopping' });
   return { ok: true };
 });
@@ -572,7 +614,6 @@ app.patch('/api/settings', async (req) => {
 });
 
 app.get('/api/system', async () => {
-  const count = async (t: string) => (await q1<{ n: number }>(`SELECT count(*)::int AS n FROM ${t}`))?.n ?? 0;
   return {
     version: pkgVersion,
     node: process.version,
@@ -582,19 +623,19 @@ app.get('/api/system', async () => {
     token_set: !!config.apiToken,
     images: imageStats(),
     counts: {
-      products: await count('products'),
-      stock_in: (await q1<{ n: number }>(`SELECT count(*)::int AS n FROM stock_items WHERE status = 'in_stock'`))?.n ?? 0,
-      stock_total: await count('stock_items'),
-      locations: await count('locations'),
-      stores: await count('stores'),
-      shopping_open: (await q1<{ n: number }>('SELECT count(*)::int AS n FROM shopping_items WHERE NOT done'))?.n ?? 0,
+      products: await db.$count(products),
+      stock_in: await db.$count(stockItems, eq(stockItems.status, 'in_stock')),
+      stock_total: await db.$count(stockItems),
+      locations: await db.$count(locations),
+      stores: await db.$count(stores),
+      shopping_open: await db.$count(shoppingItems, eq(shoppingItems.done, false)),
     },
   };
 });
 
 // recompute the automatic default storage location after location types changed (hand-set products are left alone)
 app.post('/api/maintenance/reclassify', async () => {
-  const list = await q<any>('SELECT * FROM products WHERE auto_defaults');
+  const list = await db.select().from(products).where(eq(products.auto_defaults, true));
   let changed = 0;
   for (const p of list) {
     const after = await applyDerivedDefaults(p);
@@ -606,7 +647,12 @@ app.post('/api/maintenance/reclassify', async () => {
 
 // ask the online databases again for products that were not found before (e.g. after enabling another database)
 app.post('/api/maintenance/retry-unknown', async () => {
-  const list = await q<{ barcode: string }>('SELECT barcode FROM products WHERE off_found IS NOT TRUE ORDER BY off_fetched_at NULLS FIRST LIMIT 40');
+  const list = await db
+    .select({ barcode: products.barcode })
+    .from(products)
+    .where(or(isNull(products.off_found), eq(products.off_found, false)))
+    .orderBy(isNotNull(products.off_fetched_at), asc(products.off_fetched_at)) // never asked first
+    .limit(40);
   let found = 0;
   for (const { barcode } of list) {
     const r = await resolveProduct(barcode, true);
@@ -622,8 +668,11 @@ app.post('/api/maintenance/cache-images', async () => backfillImages());
 // forget the local copies; products fall back to the remote image URL
 app.post('/api/maintenance/clear-image-cache', async () => {
   const removed = clearImageFiles();
-  await q(`UPDATE products SET image_url = image_source_url, image_file = NULL WHERE image_file IS NOT NULL AND image_source_url IS NOT NULL`);
-  await q(`UPDATE products SET image_file = NULL WHERE image_file IS NOT NULL`);
+  await db
+    .update(products)
+    .set({ image_url: products.image_source_url, image_file: null })
+    .where(and(isNotNull(products.image_file), isNotNull(products.image_source_url)));
+  await db.update(products).set({ image_file: null }).where(isNotNull(products.image_file));
   bus.emit('change', { what: 'products' });
   return { removed };
 });
@@ -680,11 +729,11 @@ const needSession = async () => {
 
 app.get('/api/inventory', async () => {
   const session = await openSession();
-  const locations = await q<{ id: number; name: string }>('SELECT id, name FROM locations ORDER BY id');
-  if (!session) return { session: null, locations };
+  const locs = await db.select({ id: locations.id, name: locations.name }).from(locations).orderBy(locations.id);
+  if (!session) return { session: null, locations: locs };
   const list = await inventoryRows(session.id);
   const diffs = list.filter((r) => r.before !== r.counted);
-  return { session, locations, rows: list, summary: { total: list.length, diffs: diffs.length, open: diffs.filter((r) => r.resolved == null).length } };
+  return { session, locations: locs, rows: list, summary: { total: list.length, diffs: diffs.length, open: diffs.filter((r) => r.resolved == null).length } };
 });
 
 app.post('/api/inventory/start', async (req) => {
@@ -771,7 +820,7 @@ app.get('/ws', { websocket: true }, (socket) => {
 });
 
 app.get('/healthz', async (_req: FastifyRequest, reply: FastifyReply) => {
-  await pool.query('SELECT 1');
+  await ping();
   return reply.send({ ok: true });
 });
 
@@ -783,6 +832,7 @@ async function connectWithRetry(): Promise<void> {
       await migrate();
       return;
     } catch (e) {
+      if (e instanceof SchemaError) throw e; // waiting does not help
       app.log.warn(`Datenbank noch nicht bereit (${e instanceof Error ? e.message : e}), neuer Versuch…`);
       await new Promise((r) => setTimeout(r, 2000));
     }

@@ -1,45 +1,18 @@
 import { EventEmitter } from 'node:events';
+import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, max, or } from 'drizzle-orm';
 import { config } from './config.js';
 import { MODES, type Mode, normalizeBarcode, parseControl, resolveDigits } from './control.js';
 import { addDays, today } from './dates.js';
-import { q, q1 } from './db.js';
+import { db, type Tx } from './db.js';
+import { greatest, plus } from './expressions.js';
 import { countScan, undoCount } from './inventory.js';
 import { fetchOff } from './off.js';
 import { downloadImage, hasImageFile, localUrl } from './images.js';
 import { getSettings } from './settings.js';
-import { deriveStorage } from './storage.js';
+import { appState, events, locations, type Product, products, shoppingItems, stockItems, stores } from './schema.js';
+import { deriveStorage, type Kind } from './storage.js';
 
 export const bus = new EventEmitter();
-
-export interface Product {
-  barcode: string;
-  name: string;
-  brand: string | null;
-  quantity_text: string | null;
-  categories: string | null;
-  image_url: string | null;
-  nutriscore: string | null;
-  nova_group: number | null;
-  ecoscore: string | null;
-  nutriments: Record<string, number | string>;
-  ingredients: string | null;
-  allergens: string | null;
-  serving_size: string | null;
-  off_found: boolean | null;
-  off_fetched_at: string | null;
-  shelf_life_days: number | null;
-  days_after_opening: number | null;
-  min_stock: number;
-  store_id: number | null;
-  source: string | null;
-  image_source_url: string | null;
-  image_file: string | null;
-  categories_tags: string[] | null;
-  conservation: string | null;
-  location_id: number | null; // default storage location
-  auto_defaults: boolean; // location_id / move_on_open were derived automatically (false = set by hand)
-  move_on_open: boolean; // pantry -> fridge when opened
-}
 
 export interface AppState {
   mode: Mode;
@@ -47,7 +20,7 @@ export interface AppState {
   location_name: string | null;
   pending_qty: number | null;
   digits: string;
-  updated_at: string;
+  updated_at: Date;
 }
 
 export interface ScanResult {
@@ -81,19 +54,25 @@ export async function getState(): Promise<AppState> {
 }
 
 async function selectState(): Promise<AppState> {
-  return (await q1<AppState>(
-    'SELECT a.mode, a.location_id, l.name AS location_name, a.pending_qty, a.digits, a.updated_at FROM app_state a LEFT JOIN locations l ON l.id = a.location_id WHERE a.id = 1',
-  ))!;
+  const [s] = await db
+    .select({
+      mode: appState.mode,
+      location_id: appState.location_id,
+      location_name: locations.name,
+      pending_qty: appState.pending_qty,
+      digits: appState.digits,
+      updated_at: appState.updated_at,
+    })
+    .from(appState)
+    .leftJoin(locations, eq(locations.id, appState.location_id))
+    .where(eq(appState.id, 1));
+  return s!;
 }
 
 type StatePatch = Partial<Pick<AppState, 'mode' | 'location_id' | 'pending_qty' | 'digits'>>;
 
 export async function saveState(patch: StatePatch, touch = true): Promise<AppState> {
-  const keys = Object.keys(patch) as (keyof StatePatch)[];
-  const sets = keys.map((k, i) => `${k} = $${i + 1}`);
-  if (touch) sets.push('updated_at = now()');
-  const values = keys.map((k) => patch[k]);
-  await q(`UPDATE app_state SET ${sets.join(', ')} WHERE id = 1`, values);
+  await db.update(appState).set(touch ? { ...patch, updated_at: new Date() } : patch).where(eq(appState.id, 1));
   return selectState();
 }
 
@@ -103,7 +82,12 @@ export async function setLocation(id: number | null): Promise<AppState> {
   return s;
 }
 
-export const listLocations = () => q<{ id: number; name: string; kind: string }>('SELECT id, name, kind FROM locations ORDER BY id');
+export const listLocations = () => db.select({ id: locations.id, name: locations.name, kind: locations.kind }).from(locations).orderBy(locations.id);
+
+export async function getLocation(id: number): Promise<{ id: number; name: string } | undefined> {
+  const [l] = await db.select({ id: locations.id, name: locations.name }).from(locations).where(eq(locations.id, id));
+  return l;
+}
 
 export async function setMode(mode: Mode): Promise<AppState> {
   const s = await saveState({ mode });
@@ -114,7 +98,8 @@ export async function setMode(mode: Mode): Promise<AppState> {
 // ---------------------------------------------------------------- products
 
 export async function getProduct(barcode: string): Promise<Product | undefined> {
-  return q1<Product>('SELECT * FROM products WHERE barcode = $1', [barcode]);
+  const [p] = await db.select().from(products).where(eq(products.barcode, barcode));
+  return p;
 }
 
 /** Looks the product up locally; fetches from Open Food Facts when unknown or not yet resolved. */
@@ -129,102 +114,100 @@ export async function resolveProduct(barcode: string, force = false): Promise<{ 
   const off = await fetchOff(barcode);
   if (off.status === 'found') {
     const p = off.product;
-    product = (await q1<Product>(
-      `INSERT INTO products (barcode, name, brand, quantity_text, categories, image_url, nutriscore, nova_group, ecoscore,
-                             nutriments, ingredients, allergens, serving_size, off_found, off_fetched_at, source, categories_tags, conservation)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,true,now(),$15,$16,$17)
-       ON CONFLICT (barcode) DO UPDATE SET
-         name = CASE WHEN products.off_found IS TRUE AND NOT $14 THEN products.name ELSE EXCLUDED.name END,
-         brand = EXCLUDED.brand, quantity_text = EXCLUDED.quantity_text, categories = EXCLUDED.categories,
-         image_url = EXCLUDED.image_url, nutriscore = EXCLUDED.nutriscore, nova_group = EXCLUDED.nova_group,
-         ecoscore = EXCLUDED.ecoscore, nutriments = EXCLUDED.nutriments, ingredients = EXCLUDED.ingredients,
-         allergens = EXCLUDED.allergens, serving_size = EXCLUDED.serving_size, off_found = true, off_fetched_at = now(), source = EXCLUDED.source,
-         categories_tags = EXCLUDED.categories_tags, conservation = EXCLUDED.conservation
-       RETURNING *`,
-      [
-        barcode, p.name, p.brand, p.quantity_text, p.categories, p.image_url, p.nutriscore, p.nova_group, p.ecoscore,
-        JSON.stringify(p.nutriments), p.ingredients, p.allergens, p.serving_size, force, p.source, p.categories_tags, p.conservation,
-      ],
-    ))!;
-    product = await applyDerivedDefaults(product); // default storage location + move-on-open, unless set by hand
+    const fromOff = {
+      name: p.name, brand: p.brand, quantity_text: p.quantity_text, categories: p.categories, image_url: p.image_url,
+      nutriscore: p.nutriscore, nova_group: p.nova_group, ecoscore: p.ecoscore, nutriments: p.nutriments, ingredients: p.ingredients,
+      allergens: p.allergens, serving_size: p.serving_size, off_found: true, off_fetched_at: new Date(), source: p.source,
+      categories_tags: p.categories_tags, conservation: p.conservation,
+    };
+    [product] = await db
+      .insert(products)
+      .values({ barcode, ...fromOff })
+      // a name found online before is kept unless the refresh was asked for
+      .onConflictDoUpdate({ target: products.barcode, set: { ...fromOff, name: product?.off_found === true && !force ? product.name : p.name } })
+      .returning();
+    product = await applyDerivedDefaults(product!); // default storage location + move-on-open, unless set by hand
     void localizeImage(product).catch(() => undefined); // keep a local copy; the scan itself does not wait for the download
     return { product };
   }
 
   const offError = off.status === 'error' ? off.error : undefined;
+  const notFound = off.status === 'not_found';
   if (!product) {
-    product = (await q1<Product>(
-      `INSERT INTO products (barcode, name, off_found, off_fetched_at) VALUES ($1, $2, $3, now())
-       ON CONFLICT (barcode) DO UPDATE SET off_fetched_at = now() RETURNING *`,
-      [barcode, `Unbekannt ${barcode}`, off.status === 'not_found' ? false : null],
-    ))!;
+    [product] = await db
+      .insert(products)
+      .values({ barcode, name: `Unbekannt ${barcode}`, off_found: notFound ? false : null, off_fetched_at: new Date() })
+      .onConflictDoUpdate({ target: products.barcode, set: { off_fetched_at: new Date() } })
+      .returning();
   } else {
-    product = (await q1<Product>('UPDATE products SET off_fetched_at = now(), off_found = COALESCE($2, off_found) WHERE barcode = $1 RETURNING *', [
-      barcode,
-      off.status === 'not_found' ? false : null,
-    ]))!;
+    [product] = await db
+      .update(products)
+      .set({ off_fetched_at: new Date(), ...(notFound ? { off_found: false } : {}) })
+      .where(eq(products.barcode, barcode))
+      .returning();
   }
-  return { product, offError };
+  return { product: product!, offError };
 }
 
 const isPlaceholder = (p: Product) => p.off_found !== true && p.name === `Unbekannt ${p.barcode}`;
 
 // ---------------------------------------------------------------- stock operations
 
-const PICK_ORDER = `(opened_at IS NULL), COALESCE(best_before, 'infinity'::date), added_at`;
+/** Which packs go first: opened ones, then the earliest best-before date (none = last), then the oldest. */
+const BY_BEST_BEFORE = [isNull(stockItems.best_before), asc(stockItems.best_before), asc(stockItems.added_at), asc(stockItems.id)];
+export const PICK_ORDER = [isNull(stockItems.opened_at), ...BY_BEST_BEFORE];
 
-export async function logEvent(kind: string, barcode: string | null, itemIds: number[], detail: object = {}): Promise<void> {
-  await q('INSERT INTO events (kind, barcode, item_ids, detail) VALUES ($1,$2,$3,$4)', [kind, barcode, itemIds, JSON.stringify(detail)]);
+const inStock = (barcode: string) => and(eq(stockItems.barcode, barcode), eq(stockItems.status, 'in_stock'));
+const openShoppingEntry = (barcode: string) => and(eq(shoppingItems.barcode, barcode), eq(shoppingItems.done, false));
+
+export async function logEvent(kind: string, barcode: string | null, itemIds: number[], detail: Record<string, unknown> = {}): Promise<void> {
+  await db.insert(events).values({ kind, barcode, item_ids: itemIds, detail });
 }
 
 export async function stockCount(barcode: string): Promise<number> {
-  const r = await q1<{ n: number }>(`SELECT count(*)::int AS n FROM stock_items WHERE barcode = $1 AND status = 'in_stock'`, [barcode]);
-  return r?.n ?? 0;
+  return db.$count(stockItems, inStock(barcode));
 }
 
-async function addStock(p: Product, qty: number, bestBefore: string | null, locationId: number | null): Promise<number[]> {
-  const rows = await q<{ id: number }>(
-    `INSERT INTO stock_items (barcode, best_before, location_id) SELECT $1, $2::date, $4 FROM generate_series(1, $3) RETURNING id`,
-    [p.barcode, bestBefore, qty, locationId],
-  );
-  await q('UPDATE shopping_items SET done = true, done_at = now() WHERE barcode = $1 AND NOT done', [p.barcode]);
+/** Adds packs of a product; returns their ids. */
+export async function addStock(barcode: string, qty: number, bestBefore: string | null, locationId: number | null): Promise<number[]> {
+  const rows = await db
+    .insert(stockItems)
+    .values(Array.from({ length: qty }, () => ({ barcode, best_before: bestBefore, location_id: locationId })))
+    .returning({ id: stockItems.id });
   return rows.map((r) => r.id);
 }
 
 async function finishStock(barcode: string, qty: number, status: 'consumed' | 'wasted', reason: string | null): Promise<number[]> {
-  const rows = await q<{ id: number }>(
-    `UPDATE stock_items SET status = $2, finished_at = now(), waste_reason = $3
-     WHERE id IN (SELECT id FROM stock_items WHERE barcode = $1 AND status = 'in_stock' ORDER BY ${PICK_ORDER} LIMIT $4)
-     RETURNING id`,
-    [barcode, status, reason, qty],
-  );
+  const pick = db.select({ id: stockItems.id }).from(stockItems).where(inStock(barcode)).orderBy(...PICK_ORDER).limit(qty);
+  const rows = await db
+    .update(stockItems)
+    .set({ status, finished_at: new Date(), waste_reason: reason })
+    .where(inArray(stockItems.id, pick))
+    .returning({ id: stockItems.id });
   return rows.map((r) => r.id);
 }
 
 async function openStock(barcode: string, qty: number): Promise<number[]> {
-  const rows = await q<{ id: number }>(
-    `UPDATE stock_items SET opened_at = now()
-     WHERE id IN (SELECT id FROM stock_items WHERE barcode = $1 AND status = 'in_stock' AND opened_at IS NULL
-                  ORDER BY COALESCE(best_before, 'infinity'::date), added_at LIMIT $2)
-     RETURNING id`,
-    [barcode, qty],
-  );
+  const pick = db
+    .select({ id: stockItems.id })
+    .from(stockItems)
+    .where(and(inStock(barcode), isNull(stockItems.opened_at)))
+    .orderBy(...BY_BEST_BEFORE)
+    .limit(qty);
+  const rows = await db.update(stockItems).set({ opened_at: new Date() }).where(inArray(stockItems.id, pick)).returning({ id: stockItems.id });
   return rows.map((r) => r.id);
 }
 
 /** Puts a product on the shopping list (or raises the qty of an open entry). */
 export async function addToShopping(p: Product | null, name: string, qty: number, source: string): Promise<{ id: number; created: boolean }> {
   if (p) {
-    const existing = await q1<{ id: number }>('SELECT id FROM shopping_items WHERE barcode = $1 AND NOT done', [p.barcode]);
+    const [existing] = await db.select({ id: shoppingItems.id }).from(shoppingItems).where(openShoppingEntry(p.barcode));
     if (existing) {
-      await q('UPDATE shopping_items SET qty = qty + $2 WHERE id = $1', [existing.id, qty]);
+      await db.update(shoppingItems).set({ qty: plus(shoppingItems.qty, qty) }).where(eq(shoppingItems.id, existing.id));
       return { id: existing.id, created: false };
     }
   }
-  const row = await q1<{ id: number }>(
-    'INSERT INTO shopping_items (barcode, name, qty, source) VALUES ($1,$2,$3,$4) RETURNING id',
-    [p?.barcode ?? null, name, qty, source],
-  );
+  const [row] = await db.insert(shoppingItems).values({ barcode: p?.barcode ?? null, name, qty, source }).returning({ id: shoppingItems.id });
   return { id: row!.id, created: true };
 }
 
@@ -233,10 +216,15 @@ export async function restockCheck(p: Product): Promise<string | null> {
   if (p.min_stock <= 0) return null;
   const have = await stockCount(p.barcode);
   if (have >= p.min_stock) return null;
-  const open = await q1('SELECT id FROM shopping_items WHERE barcode = $1 AND NOT done', [p.barcode]);
-  if (open) return null;
+  if (await db.$count(shoppingItems, openShoppingEntry(p.barcode))) return null;
   await addToShopping(p, productLabel(p), p.min_stock - have, 'auto');
   return 'Einkaufsliste ergänzt';
+}
+
+/** Sort position for a new store: after the last one. */
+export async function nextStoreSort(tx: Tx = db): Promise<number> {
+  const [r] = await tx.select({ last: max(stores.sort) }).from(stores);
+  return r?.last == null ? 1 : r.last + 1;
 }
 
 export const productLabel = (p: Product) => (p.brand && !p.name.toLowerCase().includes(p.brand.toLowerCase()) ? `${p.name} (${p.brand})` : p.name);
@@ -264,7 +252,7 @@ export async function handleScan(rawInput: string, source = 'api'): Promise<Scan
         message = `Modus: ${MODE_LABEL[ctl.mode]}`;
         break;
       case 'location': {
-        const loc = await q1<{ id: number; name: string }>('SELECT id, name FROM locations WHERE id = $1', [ctl.id]);
+        const loc = await getLocation(ctl.id);
         if (!loc) {
           level = 'error';
           message = `Unbekannter Lagerort (Code PCLOC${ctl.id})`;
@@ -345,8 +333,9 @@ export async function handleScan(rawInput: string, source = 'api'): Promise<Scan
       const bb = product.shelf_life_days ? today(addDays(new Date(), product.shelf_life_days)) : null;
       // the product's own default location wins; the scanned (sticky) location is the fallback
       const useLoc = product.location_id ?? state.location_id;
-      const locName = useLoc ? (await q1<{ name: string }>('SELECT name FROM locations WHERE id = $1', [useLoc]))?.name : null;
-      const ids = await addStock(product, qty, bb, useLoc);
+      const locName = useLoc ? (await getLocation(useLoc))?.name : null;
+      const ids = await addStock(barcode, qty, bb, useLoc);
+      await db.update(shoppingItems).set({ done: true, done_at: new Date() }).where(openShoppingEntry(barcode)); // bought
       await logEvent('add', barcode, ids, { best_before: bb, source, location_id: useLoc });
       const where = locName ? ` → ${locName}${product.location_id ? (product.auto_defaults ? ' (automatisch)' : '') : ''}` : '';
       message = `+${qty} ${label}${where}${bb ? ` · MHD ${bb} (Standard)` : ' · MHD optional: jetzt scannen'}`;
@@ -443,35 +432,42 @@ const MODE_LABEL: Record<Mode, string> = {
 
 // ---------------------------------------------------------------- undo
 
+/** The most recent action that was not undone yet. */
+async function lastEvent() {
+  const [ev] = await db.select().from(events).where(eq(events.undone, false)).orderBy(desc(events.id)).limit(1);
+  return ev;
+}
+
 export async function undoLast(): Promise<{ ok: boolean; message: string }> {
-  const ev = await q1<{ id: number; kind: string; barcode: string; item_ids: number[]; detail: any }>(
-    'SELECT * FROM events WHERE NOT undone ORDER BY id DESC LIMIT 1',
-  );
+  const ev = await lastEvent();
   if (!ev) return { ok: false, message: 'Nichts zum Rückgängigmachen' };
+  const packs = inArray(stockItems.id, ev.item_ids);
   switch (ev.kind) {
     case 'add':
-      await q(`DELETE FROM stock_items WHERE id = ANY($1::bigint[])`, [ev.item_ids]);
+      await db.delete(stockItems).where(packs);
       break;
     case 'consume':
     case 'waste':
     case 'adjust':
-      await q(`UPDATE stock_items SET status='in_stock', finished_at=NULL, waste_reason=NULL WHERE id = ANY($1::bigint[])`, [ev.item_ids]);
+      await db.update(stockItems).set({ status: 'in_stock', finished_at: null, waste_reason: null }).where(packs);
       break;
     case 'count':
-      await undoCount(ev.detail, ev.barcode);
+      await undoCount(ev.detail as { session: number; location: number; qty: number }, ev.barcode!);
       break;
     case 'open':
-      await q(`UPDATE stock_items SET opened_at = NULL WHERE id = ANY($1::bigint[])`, [ev.item_ids]);
-      for (const m of (ev.detail?.moved ?? []) as { id: number; from: number }[]) await q('UPDATE stock_items SET location_id = $2 WHERE id = $1', [m.id, m.from]);
+      await db.update(stockItems).set({ opened_at: null }).where(packs);
+      for (const m of (ev.detail.moved ?? []) as { id: number; from: number }[]) {
+        await db.update(stockItems).set({ location_id: m.from }).where(eq(stockItems.id, m.id));
+      }
       break;
     case 'shop': {
-      const d = ev.detail ?? {};
-      if (d.created) await q('DELETE FROM shopping_items WHERE id = $1', [d.shopping_id]);
-      else await q('UPDATE shopping_items SET qty = GREATEST(1, qty - $2) WHERE id = $1', [d.shopping_id, d.qty ?? 1]);
+      const d = ev.detail;
+      if (d.created) await db.delete(shoppingItems).where(eq(shoppingItems.id, d.shopping_id));
+      else await db.update(shoppingItems).set({ qty: greatest(1, plus(shoppingItems.qty, -(d.qty ?? 1))) }).where(eq(shoppingItems.id, d.shopping_id));
       break;
     }
   }
-  await q('UPDATE events SET undone = true WHERE id = $1', [ev.id]);
+  await db.update(events).set({ undone: true }).where(eq(events.id, ev.id));
   bus.emit('change', { what: 'stock' });
   return { ok: true, message: `Rückgängig: ${ev.kind}` };
 }
@@ -479,16 +475,14 @@ export async function undoLast(): Promise<{ ok: boolean; message: string }> {
 /** Applies a best-before date to the item(s) of the most recent add, if that was the last action. */
 async function applyDateToLastAdd(date: string, mode: Mode): Promise<{ ok: boolean; message: string }> {
   if (mode !== 'add') return { ok: false, message: `MHD ${date} verworfen: nur im Modus Einlagern möglich` };
-  const ev = await q1<{ id: number; barcode: string; item_ids: number[]; ts: string; kind: string }>(
-    'SELECT * FROM events WHERE NOT undone ORDER BY id DESC LIMIT 1',
-  );
-  const fresh = ev && Date.now() - new Date(ev.ts).getTime() < (await getSettings()).pending_minutes * 60000;
+  const ev = await lastEvent();
+  const fresh = ev && Date.now() - ev.ts.getTime() < (await getSettings()).pending_minutes * 60000;
   if (!ev || ev.kind !== 'add' || !fresh) {
     return { ok: false, message: `MHD ${date} verworfen: erst ein Produkt einlagern, dann das MHD scannen` };
   }
-  await q(`UPDATE stock_items SET best_before = $2::date WHERE id = ANY($1::bigint[]) AND status = 'in_stock'`, [ev.item_ids, date]);
-  await q(`UPDATE events SET detail = detail || $2::jsonb WHERE id = $1`, [ev.id, JSON.stringify({ best_before: date })]);
-  const p = await getProduct(ev.barcode);
+  await db.update(stockItems).set({ best_before: date }).where(and(inArray(stockItems.id, ev.item_ids), eq(stockItems.status, 'in_stock')));
+  await db.update(events).set({ detail: { ...ev.detail, best_before: date } }).where(eq(events.id, ev.id));
+  const p = ev.barcode ? await getProduct(ev.barcode) : undefined;
   bus.emit('change', { what: 'stock' });
   const n = ev.item_ids.length > 1 ? ` (${ev.item_ids.length}×)` : '';
   return { ok: true, message: `MHD ${date} für ${p ? productLabel(p) : ev.barcode}${n}` };
@@ -496,16 +490,24 @@ async function applyDateToLastAdd(date: string, mode: Mode): Promise<{ ok: boole
 
 // ---------------------------------------------------------------- default storage location
 
-export async function locationForKind(kind: string): Promise<number | null> {
-  return (await q1<{ id: number }>('SELECT id FROM locations WHERE kind = $1 ORDER BY id LIMIT 1', [kind]))?.id ?? null;
+/** The first storage location of a kind (fridge, freezer, pantry, other). */
+export async function locationOfKind(kind: Kind): Promise<{ id: number; name: string } | undefined> {
+  const [l] = await db
+    .select({ id: locations.id, name: locations.name })
+    .from(locations)
+    .where(eq(locations.kind, kind))
+    .orderBy(locations.id)
+    .limit(1);
+  return l;
 }
 
 /** Sets the default location and move-on-open flag from the product's category/storage data (only while not set by hand). */
 export async function applyDerivedDefaults(p: Product): Promise<Product> {
   if (!p.auto_defaults) return p;
   const d = deriveStorage({ tags: p.categories_tags, conservation: p.conservation, source: p.source });
-  const loc = d.kind ? await locationForKind(d.kind) : null;
-  return (await q1<Product>('UPDATE products SET location_id = $2, move_on_open = $3 WHERE barcode = $1 RETURNING *', [p.barcode, loc, d.moveOnOpen])) ?? p;
+  const loc = d.kind ? ((await locationOfKind(d.kind))?.id ?? null) : null;
+  const [row] = await db.update(products).set({ location_id: loc, move_on_open: d.moveOnOpen }).where(eq(products.barcode, p.barcode)).returning();
+  return row ?? p;
 }
 
 /**
@@ -514,32 +516,42 @@ export async function applyDerivedDefaults(p: Product): Promise<Product> {
  */
 export async function relocateOnOpen(ids: number[]): Promise<{ moved: { id: number; from: number }[]; to: string | null }> {
   if (!ids.length) return { moved: [], to: null };
-  const fridge = await q1<{ id: number; name: string }>(`SELECT id, name FROM locations WHERE kind = 'fridge' ORDER BY id LIMIT 1`);
+  const fridge = await locationOfKind('fridge');
   if (!fridge) return { moved: [], to: null };
-  const rows = await q<{ id: number; from_loc: number }>(
-    `WITH cand AS (
-       SELECT s.id, s.location_id AS from_loc FROM stock_items s
-       JOIN locations l ON l.id = s.location_id JOIN products p ON p.barcode = s.barcode
-       WHERE s.id = ANY($1::bigint[]) AND l.kind = 'pantry' AND p.move_on_open)
-     UPDATE stock_items s SET location_id = $2 FROM cand WHERE s.id = cand.id RETURNING s.id, cand.from_loc`,
-    [ids, fridge.id],
-  );
-  if (rows.length) bus.emit('change', { what: 'stock' });
-  return { moved: rows.map((r) => ({ id: r.id, from: r.from_loc })), to: rows.length ? fridge.name : null };
+  const moved = await db.transaction(async (tx) => {
+    const packs = await tx
+      .select({ id: stockItems.id, from: locations.id })
+      .from(stockItems)
+      .innerJoin(locations, eq(locations.id, stockItems.location_id))
+      .innerJoin(products, eq(products.barcode, stockItems.barcode))
+      .where(and(inArray(stockItems.id, ids), eq(locations.kind, 'pantry'), eq(products.move_on_open, true)));
+    if (packs.length) await tx.update(stockItems).set({ location_id: fridge.id }).where(inArray(stockItems.id, packs.map((m) => m.id)));
+    return packs;
+  });
+  if (moved.length) bus.emit('change', { what: 'stock' });
+  return { moved, to: moved.length ? fridge.name : null };
 }
 
 /** One-off for products stored before categories were kept: fetch them again and derive the defaults (no stock is moved). */
 export async function backfillClassification(log: (m: string) => void): Promise<void> {
-  const todo = await q<{ barcode: string }>(`SELECT barcode FROM products WHERE off_found IS TRUE AND categories_tags IS NULL ORDER BY barcode`);
+  const todo = await db
+    .select({ barcode: products.barcode })
+    .from(products)
+    .where(and(eq(products.off_found, true), isNull(products.categories_tags)))
+    .orderBy(products.barcode);
   if (!todo.length) return;
   log(`classifying ${todo.length} products (storage location) ...`);
   for (const { barcode } of todo) {
     const off = await fetchOff(barcode);
     if (off.status === 'found') {
-      const row = await q1<Product>('UPDATE products SET categories_tags = $2, conservation = $3 WHERE barcode = $1 RETURNING *', [barcode, off.product.categories_tags, off.product.conservation]);
+      const [row] = await db
+        .update(products)
+        .set({ categories_tags: off.product.categories_tags, conservation: off.product.conservation })
+        .where(eq(products.barcode, barcode))
+        .returning();
       if (row) await applyDerivedDefaults(row);
     } else if (off.status === 'not_found') {
-      await q('UPDATE products SET categories_tags = $2 WHERE barcode = $1', [barcode, []]); // do not ask again
+      await db.update(products).set({ categories_tags: [] }).where(eq(products.barcode, barcode)); // do not ask again
     }
     await new Promise((r) => setTimeout(r, 500)); // be polite to the free API
   }
@@ -557,14 +569,16 @@ export async function localizeImage(p: Product): Promise<Product> {
   const url = p.image_url;
   if (!url || !/^https?:\/\//i.test(url)) return p; // none, or already local
   if (p.image_source_url === url && hasImageFile(p.image_file)) {
-    return (await q1<Product>('UPDATE products SET image_url = $2 WHERE barcode = $1 RETURNING *', [p.barcode, localUrl(p.image_file!, url)])) ?? p;
+    const [row] = await db.update(products).set({ image_url: localUrl(p.image_file!, url) }).where(eq(products.barcode, p.barcode)).returning();
+    return row ?? p;
   }
   const file = await downloadImage(p.barcode, url);
   if (!file) return p; // keep the remote URL; tried again on the next lookup / maintenance run
-  const row = await q1<Product>(
-    'UPDATE products SET image_source_url = $2, image_file = $3, image_url = $4 WHERE barcode = $1 RETURNING *',
-    [p.barcode, url, file, localUrl(file, url)],
-  );
+  const [row] = await db
+    .update(products)
+    .set({ image_source_url: url, image_file: file, image_url: localUrl(file, url) })
+    .where(eq(products.barcode, p.barcode))
+    .returning();
   bus.emit('change', { what: 'products' });
   return row ?? p;
 }
@@ -574,12 +588,16 @@ export async function localizeImage(p: Product): Promise<Product> {
  * (e.g. after the database was restored on a new server without the images volume).
  */
 export async function backfillImages(log: (m: string) => void = () => undefined): Promise<{ tried: number; cached: number }> {
-  const rows = await q<Product>(`SELECT * FROM products WHERE image_url ~* '^https?://' OR image_file IS NOT NULL ORDER BY barcode`);
+  const rows = await db
+    .select()
+    .from(products)
+    .where(or(ilike(products.image_url, 'http://%'), ilike(products.image_url, 'https://%'), isNotNull(products.image_file)))
+    .orderBy(products.barcode);
   const todo: Product[] = [];
   for (const p of rows) {
     if (p.image_file && !hasImageFile(p.image_file)) {
       if (!p.image_source_url) continue; // nothing to fetch it from
-      const fixed = await q1<Product>('UPDATE products SET image_url = image_source_url, image_file = NULL WHERE barcode = $1 RETURNING *', [p.barcode]);
+      const [fixed] = await db.update(products).set({ image_url: p.image_source_url, image_file: null }).where(eq(products.barcode, p.barcode)).returning();
       if (fixed) todo.push(fixed);
     } else if (p.image_url && /^https?:\/\//i.test(p.image_url)) {
       todo.push(p);

@@ -1,9 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type pg from 'pg';
+import { eq } from 'drizzle-orm';
+import type { PgTable } from 'drizzle-orm/pg-core';
 import { config } from './config.js';
-import { q, withTx } from './db.js';
+import { db, syncIdSequence, type Tx } from './db.js';
+import { appState, events, inventoryCounts, inventorySessions, locations, products, settings, shoppingItems, stockItems, stores } from './schema.js';
+import { nextStoreSort } from './service.js';
 import { invalidateSettingsCache, getSettings, sanitizeSettings } from './settings.js';
+import type { Kind } from './storage.js';
 
 /**
  * Data backup: export (JSON) and import.
@@ -24,11 +28,11 @@ export async function buildExport() {
     format: FORMAT,
     exported_at: new Date().toISOString(),
     settings: await getSettings(),
-    locations: await q('SELECT * FROM locations ORDER BY id'),
-    stores: await q('SELECT * FROM stores ORDER BY id'),
-    products: await q('SELECT * FROM products ORDER BY barcode'),
-    stock_items: await q('SELECT * FROM stock_items ORDER BY id'),
-    shopping_items: await q('SELECT * FROM shopping_items ORDER BY id'),
+    locations: await db.select().from(locations).orderBy(locations.id),
+    stores: await db.select().from(stores).orderBy(stores.id),
+    products: await db.select().from(products).orderBy(products.barcode),
+    stock_items: await db.select().from(stockItems).orderBy(stockItems.id),
+    shopping_items: await db.select().from(shoppingItems).orderBy(shoppingItems.id),
   };
 }
 
@@ -146,9 +150,8 @@ function coerce(v: unknown, c: Col, where: string): unknown {
       return d.getUTCFullYear() === +m[1]! && d.getUTCMonth() === +m[2]! - 1 && d.getUTCDate() === +m[3]! ? `${m[1]}-${m[2]}-${m[3]}` : null;
     }
     case 'json': {
-      if (typeof v !== 'object' || Array.isArray(v)) return '{}';
-      const s = JSON.stringify(v);
-      return s.length > 20000 ? '{}' : s;
+      if (typeof v !== 'object' || Array.isArray(v)) return {};
+      return JSON.stringify(v).length > 20000 ? {} : v;
     }
     case 'tags': {
       if (!Array.isArray(v)) return null;
@@ -237,20 +240,50 @@ export function normalizeBackup(raw: unknown): Normalized {
 
 // ---------------------------------------------------------------- database
 
-const PG_CAST: Record<T, string> = { text: '', int: '', bool: '', ts: '::timestamptz', date: '::date', json: '::jsonb', tags: '::text[]' };
-
-async function insertRows(c: pg.PoolClient, tableName: string, cols: Col[], rows: Row[], skip: string[] = []): Promise<void> {
-  const use = cols.filter((x) => !skip.includes(x.name));
-  const sql = `INSERT INTO ${tableName} (${use.map((x) => x.name).join(', ')}) VALUES (${use.map((x, i) => `$${i + 1}${PG_CAST[x.type]}`).join(', ')})`;
-  for (const r of rows) await c.query(sql, use.map((x) => r[x.name]));
+/**
+ * Writes validated rows (keys = column names); timestamps arrive as ISO text. In chunks, as PostgreSQL takes at most
+ * 65535 values per statement.
+ */
+async function insertRows<TTable extends PgTable>(tx: Tx, table: TTable, cols: Col[], rows: Row[]): Promise<void> {
+  const values = rows.map((r) => {
+    const v: Row = {};
+    for (const c of cols) v[c.name] = c.type === 'ts' && r[c.name] != null ? new Date(r[c.name] as string) : r[c.name];
+    return v as TTable['$inferInsert'];
+  });
+  for (let i = 0; i < values.length; i += 500) await tx.insert(table).values(values.slice(i, i + 500));
 }
 
 async function counts(): Promise<Record<string, number>> {
-  const out: Record<string, number> = {};
-  for (const t of ['locations', 'stores', 'products', 'stock_items', 'shopping_items']) {
-    out[t] = Number((await q<{ n: string }>(`SELECT count(*) AS n FROM ${t}`))[0]?.n ?? 0);
+  return {
+    locations: await db.$count(locations),
+    stores: await db.$count(stores),
+    products: await db.$count(products),
+    stock_items: await db.$count(stockItems),
+    shopping_items: await db.$count(shoppingItems),
+  };
+}
+
+/** Maps the file's ids to an existing row of the same name (any case) or to a newly inserted one. */
+async function mapByName(
+  existing: { id: number; name: string }[],
+  rows: Row[],
+  insert: (r: Row) => Promise<number>,
+): Promise<{ ids: Map<unknown, number>; added: number }> {
+  const byName = new Map<string, number>();
+  for (const e of existing) if (!byName.has(e.name.toLowerCase())) byName.set(e.name.toLowerCase(), e.id);
+  const ids = new Map<unknown, number>();
+  let added = 0;
+  for (const r of rows) {
+    const key = String(r.name).toLowerCase();
+    let id = byName.get(key);
+    if (id === undefined) {
+      id = await insert(r);
+      byName.set(key, id);
+      added++;
+    }
+    ids.set(r.id, id);
   }
-  return out;
+  return { ids, added };
 }
 
 export interface ImportResult {
@@ -274,18 +307,17 @@ export async function importBackup(raw: unknown, mode: 'replace' | 'merge', dryR
     out.result = { ...file };
     if (dryRun) return out;
     out.backup_file = await writeSafetyBackup();
-    await withTx(async (c) => {
-      for (const t of ['inventory_counts', 'inventory_sessions', 'events', 'shopping_items', 'stock_items', 'products', 'stores', 'locations', 'settings']) await c.query(`DELETE FROM ${t}`);
-      await insertRows(c, 'locations', LOCATION, n.locations);
-      await insertRows(c, 'stores', STORE, n.stores);
-      await insertRows(c, 'products', PRODUCT, n.products);
-      await insertRows(c, 'stock_items', STOCK, n.stock_items);
-      await insertRows(c, 'shopping_items', SHOPPING, n.shopping_items);
-      for (const t of ['locations', 'stores', 'stock_items', 'shopping_items']) {
-        await c.query(`SELECT setval(pg_get_serial_sequence('${t}', 'id'), GREATEST((SELECT COALESCE(max(id), 0) FROM ${t}), 1), (SELECT count(*) > 0 FROM ${t}))`);
-      }
-      for (const [k, v] of Object.entries(n.settings)) await c.query(`INSERT INTO settings (key, value) VALUES ($1, $2::jsonb)`, [k, JSON.stringify(v)]);
-      await c.query(`UPDATE app_state SET location_id = (SELECT id FROM locations WHERE kind = 'fridge' ORDER BY id LIMIT 1), pending_qty = NULL, digits = ''`);
+    await db.transaction(async (tx) => {
+      for (const t of [inventoryCounts, inventorySessions, events, shoppingItems, stockItems, products, stores, locations, settings]) await tx.delete(t);
+      await insertRows(tx, locations, LOCATION, n.locations);
+      await insertRows(tx, stores, STORE, n.stores);
+      await insertRows(tx, products, PRODUCT, n.products);
+      await insertRows(tx, stockItems, STOCK, n.stock_items);
+      await insertRows(tx, shoppingItems, SHOPPING, n.shopping_items);
+      for (const t of [locations, stores, stockItems, shoppingItems]) await syncIdSequence(tx, t);
+      for (const [key, value] of Object.entries(n.settings)) await tx.insert(settings).values({ key, value });
+      const [fridge] = await tx.select({ id: locations.id }).from(locations).where(eq(locations.kind, 'fridge')).orderBy(locations.id).limit(1);
+      await tx.update(appState).set({ location_id: fridge?.id ?? null, pending_qty: null, digits: '' });
     });
     invalidateSettingsCache();
     return out;
@@ -295,9 +327,10 @@ export async function importBackup(raw: unknown, mode: 'replace' | 'merge', dryR
   const stats = { locations_added: 0, stores_added: 0, products_added: 0, products_skipped: 0 };
   out.result = stats;
   if (dryRun) {
-    const names = async (t: string) => new Set((await q<{ name: string }>(`SELECT lower(name) AS name FROM ${t}`)).map((r) => r.name));
-    const [ln, sn] = [await names('locations'), await names('stores')];
-    const have = new Set((await q<{ barcode: string }>('SELECT barcode FROM products')).map((r) => r.barcode));
+    const lower = (rows: { name: string }[]) => new Set(rows.map((r) => r.name.toLowerCase()));
+    const ln = lower(await db.select({ name: locations.name }).from(locations));
+    const sn = lower(await db.select({ name: stores.name }).from(stores));
+    const have = new Set((await db.select({ barcode: products.barcode }).from(products)).map((r) => r.barcode));
     stats.locations_added = n.locations.filter((l) => !ln.has(String(l.name).toLowerCase())).length;
     stats.stores_added = n.stores.filter((s) => !sn.has(String(s.name).toLowerCase())).length;
     stats.products_added = n.products.filter((p) => !have.has(p.barcode as string)).length;
@@ -305,27 +338,25 @@ export async function importBackup(raw: unknown, mode: 'replace' | 'merge', dryR
     return out;
   }
   out.backup_file = await writeSafetyBackup();
-  await withTx(async (c) => {
-    const mapIds = async (tbl: 'locations' | 'stores', rows: Row[], extra: (r: Row) => unknown[], insertSql: string, counter: 'locations_added' | 'stores_added') => {
-      const map = new Map<unknown, number>();
-      for (const r of rows) {
-        const found = await c.query(`SELECT id FROM ${tbl} WHERE lower(name) = lower($1) LIMIT 1`, [r.name]);
-        if (found.rows[0]) { map.set(r.id, found.rows[0].id); continue; }
-        const ins = await c.query(insertSql, [r.name, ...extra(r)]);
-        map.set(r.id, ins.rows[0].id);
-        stats[counter]++;
-      }
-      return map;
-    };
-    const locMap = await mapIds('locations', n.locations, (r) => [r.kind], 'INSERT INTO locations (name, kind) VALUES ($1, $2) RETURNING id', 'locations_added');
-    const storeMap = await mapIds('stores', n.stores, () => [], `INSERT INTO stores (name, sort) VALUES ($1, COALESCE((SELECT max(sort) + 1 FROM stores), 1)) RETURNING id`, 'stores_added');
+  await db.transaction(async (tx) => {
+    const locs = await mapByName(await tx.select({ id: locations.id, name: locations.name }).from(locations), n.locations, async (r) => {
+      const [row] = await tx.insert(locations).values({ name: r.name as string, kind: r.kind as Kind }).returning({ id: locations.id });
+      return row!.id;
+    });
+    const sts = await mapByName(await tx.select({ id: stores.id, name: stores.name }).from(stores), n.stores, async (r) => {
+      const [row] = await tx.insert(stores).values({ name: r.name as string, sort: await nextStoreSort(tx) }).returning({ id: stores.id });
+      return row!.id;
+    });
+    stats.locations_added = locs.added;
+    stats.stores_added = sts.added;
+    const have = new Set((await tx.select({ barcode: products.barcode }).from(products)).map((r) => r.barcode));
+    const add: Row[] = [];
     for (const p of n.products) {
-      const exists = await c.query('SELECT 1 FROM products WHERE barcode = $1', [p.barcode]);
-      if (exists.rows[0]) { stats.products_skipped++; continue; }
-      const row = { ...p, location_id: p.location_id === null ? null : locMap.get(p.location_id) ?? null, store_id: p.store_id === null ? null : storeMap.get(p.store_id) ?? null };
-      await insertRows(c, 'products', PRODUCT, [row]);
-      stats.products_added++;
+      if (have.has(p.barcode as string)) { stats.products_skipped++; continue; }
+      add.push({ ...p, location_id: p.location_id === null ? null : locs.ids.get(p.location_id) ?? null, store_id: p.store_id === null ? null : sts.ids.get(p.store_id) ?? null });
     }
+    await insertRows(tx, products, PRODUCT, add);
+    stats.products_added = add.length;
   });
   return out;
 }
